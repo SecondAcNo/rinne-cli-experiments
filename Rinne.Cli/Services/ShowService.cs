@@ -1,6 +1,13 @@
-﻿using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
+﻿using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Rinne.Cli.Interfaces.Services;
+using Rinne.Cli.Models;
 
 namespace Rinne.Cli.Services
 {
@@ -26,12 +33,9 @@ namespace Rinne.Cli.Services
                 }
 
                 // space の既定解決（current）
-                if (string.IsNullOrWhiteSpace(space))
+                if (string.IsNullOrWhiteSpace(space) && File.Exists(layout.CurrentSpacePath))
                 {
-                    if (File.Exists(layout.CurrentSpacePath))
-                    {
-                        space = (await File.ReadAllTextAsync(layout.CurrentSpacePath, cancellationToken)).Trim();
-                    }
+                    space = (await File.ReadAllTextAsync(layout.CurrentSpacePath, cancellationToken)).Trim();
                 }
 
                 if (string.IsNullOrWhiteSpace(space))
@@ -53,7 +57,7 @@ namespace Rinne.Cli.Services
                         .OrderByDescending(f => f.LastWriteTimeUtc)
                         .FirstOrDefault();
 
-                    if (latest == null)
+                    if (latest is null)
                     {
                         return ShowResult.Fail(0, $"[info] スペース '{space}' にメタ情報は存在しません。");
                     }
@@ -67,11 +71,26 @@ namespace Rinne.Cli.Services
                     return ShowResult.Fail(1, $"[error] meta ファイルが見つかりません: {metaPath}");
                 }
 
+                // 読み込み（ファイル内は \uXXXX のままでも OK）
                 var json = await File.ReadAllTextAsync(metaPath, cancellationToken);
 
-                // 整形
-                using var doc = JsonDocument.Parse(json);
-                var formatted = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+                // ここで JsonDocument と Utf8JsonWriter を使い、
+                // エンコーダを明示して「日本語を素のまま」整形出力する
+                using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = true });
+
+                using var ms = new MemoryStream();
+                using (var writer = new Utf8JsonWriter(ms, new JsonWriterOptions
+                {
+                    Indented = true,
+                    // JS埋め込みを想定しないローカル用途：全Unicode素通し
+                    // （Webに埋め込む予定があるなら Default に切替）
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                }))
+                {
+                    doc.RootElement.WriteTo(writer);
+                }
+
+                var formatted = Encoding.UTF8.GetString(ms.ToArray());
 
                 return ShowResult.Ok(formatted, space, id, metaPath);
             }
