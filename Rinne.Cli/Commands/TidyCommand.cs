@@ -137,8 +137,7 @@ namespace Rinne.Cli.Commands
                   rinne {CommandName} -h | --help
 
                 description:
-                  - .rinne をリポジトリ直下へバックアップした後、
-                    指定 space（省略時は current）または全 space の最新 <keepCount> 件を残して古い履歴を削除し、
+                  - 指定 space（省略時は current）または全 space の最新 <keepCount> 件を残して古い履歴を削除し、
                     残存 meta のチェーンハッシュ（prev/this）を再計算して整えます。
                   - ID / ZIP 名は変更しません（外部参照を壊しません）。
                   - 実行前に log-output は一旦 off にしてください。

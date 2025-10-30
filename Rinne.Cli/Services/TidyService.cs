@@ -33,16 +33,12 @@ namespace Rinne.Cli.Services
             if (!Directory.Exists(layout.RinneDir))
                 throw new InvalidOperationException(".rinne not found. Run `rinne init` first.");
 
-            // 1) 必ずバックアップ（出力先は .rinne と同階層 = repoRoot）
-            //Console.WriteLine("[tidy] creating backup...");
-            //await _backup.BackupRinneAsync(repoRoot, repoRoot, ct).ConfigureAwait(false);
-
-            // 2) 対象 space 決定
+            // 1) 対象 space 決定
             var spaces = options.AllSpaces
                 ? layout.EnumerateSpaces()
                 : new[] { layout.ResolveSpace(options.Space) };
 
-            // 3) 各 space を整理
+            // 2) 各 space を整理
             foreach (var sp in spaces)
             {
                 ct.ThrowIfCancellationRequested();
