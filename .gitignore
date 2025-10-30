@@ -1,0 +1,48 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Tt]emp/
+[Tt]est[Rr]esults/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Packages
+packages/
+*.nupkg
+*.snupkg
+*.nuspec
+
+# Publish artifacts
+*.dll
+*.exe
+*.pdb
+*.appx
+*.zip
+*.msi
+*.vsix
+
+# Backup & cache
+*.bak
+*.cache
+*.tmp
+*.log
+*.db
+*.pid
+*.orig
+*.old
+
+# Rinne artifacts
+.rinne/temp/
+.rinne/logs/
+.rinne
+.rinneignore
