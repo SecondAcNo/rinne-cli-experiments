@@ -196,8 +196,6 @@ Removes older history and recalculates hash chains (`prev/this`) to maintain con
 Keeps only the latest `<keepCount>` snapshots in the target space.  
 Use `--all` to apply cleanup to all spaces.
 
-(※ A backup of the `.rinne` folder at execution time is automatically saved to the root directory.)
-
 ---
 
 ### log-output — Control log output

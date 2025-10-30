@@ -197,8 +197,6 @@ rinne tidy [space|--all] <keepCount>
 対象 space の最新 `<keepCount>` 件のみを残し、それ以前の履歴を削除します。  
 全 space を対象とする場合は `--all` を指定します。
 
-(※実行時点の .rinne フォルダが自動でルートにバックアップされます。)
-
 ---
 
 ### log-output — ログ出力制御

@@ -34,8 +34,8 @@ namespace Rinne.Cli.Services
                 throw new InvalidOperationException(".rinne not found. Run `rinne init` first.");
 
             // 1) 必ずバックアップ（出力先は .rinne と同階層 = repoRoot）
-            Console.WriteLine("[tidy] creating backup...");
-            await _backup.BackupRinneAsync(repoRoot, repoRoot, ct).ConfigureAwait(false);
+            //Console.WriteLine("[tidy] creating backup...");
+            //await _backup.BackupRinneAsync(repoRoot, repoRoot, ct).ConfigureAwait(false);
 
             // 2) 対象 space 決定
             var spaces = options.AllSpaces
