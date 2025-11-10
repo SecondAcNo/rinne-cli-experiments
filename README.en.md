@@ -24,6 +24,18 @@ It provides a mechanism for replaying, verifying, and recomposing past states to
 
 ---
 
+## Features (Planned)
+
+RINNE primarily targets large binary assets (tens of gigabytes or more).  
+While keeping full snapshots as the core design, the following features are being tested in stages:
+
+- **compress**: Recompression of existing snapshots *(experimental)*
+- **deep archive**: Long-term storage with chunk sharing and compression *(experimental)*
+- **internal refactor**: Structural reorganization for future extensibility *(experimental)*
+
+---
+
+
 ## Philosophy
 
 Rather than tracking changes, Rinne focuses on preserving entire states for replay.  
