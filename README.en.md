@@ -26,12 +26,16 @@ It provides a mechanism for replaying, verifying, and recomposing past states to
 
 ## Features (Planned)
 
-RINNE primarily targets large binary assets (tens of gigabytes or more).  
-While keeping full snapshots as the core design, the following features are being tested in stages:
+Targeting large-scale binary assets of tens of gigabytes or more,  
+this project primarily focuses on full snapshots while experimenting with the following features:
 
-- **compress**: Recompression of existing snapshots *(experimental)*
-- **deep archive**: Long-term storage with chunk sharing and compression *(experimental)*
-- **internal refactor**: Structural reorganization for future extensibility *(experimental)*
+- ~~**compress**: Compression of existing snapshots (experimental)~~ (merged into deep archive)
+- **deep archive**: Long-term storage using chunk sharing and compression (experimental)
+- **Internal structure overhaul**: Reorganization for future extensibility (experimental)
+- **Command overhaul**: Reorganization in preparation for future extensions (experimental)
+- **Language change consideration**: Evaluating C++ for performance-critical components
+- **Feature deprecation review**: Considering removal of functions such as `textdiff` and `diff`, which may become unnecessary
+- **Foundations for GUI / AI / Multi-platform support**: Planned for v0.9.2; v0.9.1 focuses on CLI updates only
 
 ---
 
