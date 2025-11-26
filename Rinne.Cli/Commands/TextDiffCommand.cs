@@ -1,242 +1,316 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
-using Rinne.Cli.Utility;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Features.TextDiff;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Space;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class TextDiffCommand : ICliCommand
 {
-    /// <summary>
-    /// テキスト差分を表示するコマンド。
-    /// </summary>
-    public sealed class TextDiffCommand : ICliCommand
+    public string Name => "textdiff";
+    public IEnumerable<string> Aliases => new[] { "tdiff", "td" };
+    public string Summary => "Show unified diffs for text files between two snapshots. Uses payload; temp-hydrate if needed. (@N and id-prefix resolved by command)";
+
+    public string Usage => """
+        Usage:
+          rinne textdiff [<space>] <A> <B>
+
+        Snapshot selectors:
+          <A>, <B> can be:
+            - full id
+            - id prefix (unique)
+            - @N (N back; @1 = previous)
+
+        Notes:
+          - If <space> is omitted, it defaults to the current space (see `rinne space current`).
+          - DEPRECATED: this command will be removed in a future version.
+          - This command accepts no options. Only positional args are allowed.
+        """;
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "textdiff";
+        Console.Error.WriteLine("warning: 'rinne textdiff' is DEPRECATED and will be removed in the next version.");
 
-        /// <summary>テキスト差分サービス。</summary>
-        private readonly ITextDiffService _service;
+        string? spaceArg = null;
+        string? selA = null, selB = null;
 
-        /// <summary>
-        /// コンストラクタ。サービスを注入する。
-        /// </summary>
-        /// <param name="service">テキスト差分を処理するサービス。</param>
-        /// <exception cref="ArgumentNullException"><paramref name="service"/> が null の場合。</exception>
-        public TextDiffCommand(ITextDiffService service)
+        for (int i = 0; i < args.Length; i++)
         {
-            _service = service ?? throw new ArgumentNullException(nameof(service));
-        }
-
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: > 0 } && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
-        {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
+            ct.ThrowIfCancellationRequested();
+            if (IsOption(args[i]))
             {
-                PrintHelp();
-                return 0;
-            }
-
-            try
-            {
-                // ===== 厳格パース =====
-                // right-trim optional:
-                //   1) textdiff
-                //   2) textdiff <space>
-                //   3) textdiff <old_id> <new_id>
-                //   4) textdiff <old_id> <new_id> <space>
-
-                string? oldId = null;
-                string? newId = null;
-                string? space = null;
-
-                switch (args.Length)
-                {
-                    case 1:
-                        // ok
-                        break;
-
-                    case 2:
-                        // textdiff <space>
-                        if (IsUnknownOption(args[1]))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{args[1]}'");
-                            return 1;
-                        }
-                        space = args[1];
-                        break;
-
-                    case 3:
-                        // textdiff <old_id> <new_id>
-                        if (IsUnknownOption(args[1]) || IsUnknownOption(args[2]))
-                        {
-                            var bad = IsUnknownOption(args[1]) ? args[1] : args[2];
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{bad}'");
-                            return 1;
-                        }
-                        oldId = args[1];
-                        newId = args[2];
-                        break;
-
-                    case 4:
-                        // textdiff <old_id> <new_id> <space>
-                        if (IsUnknownOption(args[1]) || IsUnknownOption(args[2]) || IsUnknownOption(args[3]))
-                        {
-                            var bad = IsUnknownOption(args[1]) ? args[1] : IsUnknownOption(args[2]) ? args[2] : args[3];
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{bad}'");
-                            return 1;
-                        }
-                        oldId = args[1];
-                        newId = args[2];
-                        space = args[3];
-                        break;
-
-                    default:
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: 余分な引数があります。");
-                        PrintHelp();
-                        return 1;
-                }
-                // ===== パースここまで =====
-
-                var run = await _service.RunAsync(new TextDiffRequest
-                {
-                    OldId = oldId,
-                    NewId = newId,
-                    Space = space,
-                    KeepWorkDirectory = false
-                }, cancellationToken);
-
-                // ヘッダとサマリ
-                Console.WriteLine($"[{CommandName}] Space= {run.Space}");
-                Console.WriteLine($"[{CommandName}] Zip(Left/Old)= {Path.GetFileName(run.OldZipPath)}");
-                Console.WriteLine($"[{CommandName}] Zip(Right/New)= {Path.GetFileName(run.NewZipPath)}");
-                Console.WriteLine($"[summary ] total={run.TotalCount}, +added={run.AddedCount}, -removed={run.RemovedCount}, ~modified={run.ModifiedCount}, skipped(non-text)={run.SkippedCount}, unchanged={run.UnchangedCount}");
-                Console.WriteLine();
-
-                // 本文（ファイルごと）
-                foreach (var file in run.Files)
-                {
-                    PrintFileHeader(file);
-
-                    if (file.Lines is { Count: > 0 })
-                    {
-                        foreach (var line in file.Lines)
-                        {
-                            var (prefix, color) = line.Kind switch
-                            {
-                                LineChangeKind.Inserted => ("+ ", ConsoleColor.Green),
-                                LineChangeKind.Deleted => ("- ", ConsoleColor.Red),
-                                LineChangeKind.Modified => ("~ ", ConsoleColor.Yellow),
-                                _ => ("  ", ConsoleColor.Gray),
-                            };
-                            WriteColoredLine(prefix + line.Text, color);
-                        }
-                    }
-                    else
-                    {
-                        WriteColoredLine("(no diff lines)", ConsoleColor.DarkGray);
-                    }
-
-                    Console.WriteLine();
-                }
-
-                Console.WriteLine("[info] 比較完了。");
-                return 0;
-            }
-            catch (OperationCanceledException)
-            {
-                Console.WriteLine("[warn] キャンセルされました。");
+                Console.Error.WriteLine($"unknown option: {args[i]}");
+                Console.WriteLine("Use: " + Usage);
                 return 2;
             }
-            catch (FileNotFoundException ex)
-            {
-                Console.WriteLine("[error] ZIP が見つかりません。");
-                Console.WriteLine(ex.Message);
-                return 1;
-            }
-            catch (DirectoryNotFoundException ex)
-            {
-                Console.WriteLine("[error] ディレクトリが見つかりません。");
-                Console.WriteLine(ex.Message);
-                return 1;
-            }
-            catch (InvalidOperationException ex)
-            {
-                Console.WriteLine("[error] 入力が不正です。");
-                Console.WriteLine(ex.Message);
-                PrintHelp();
-                return 1;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[error] {CommandName} 実行中にエラーが発生しました。");
-                Console.WriteLine(ex.Message);
-                return 1;
-            }
         }
 
-        /// <inheritdoc/>
-        public void PrintHelp()
+        var positionals = args.Select(TrimQuotes).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+
+        if (positionals.Count == 3)
         {
-            Console.WriteLine($"""
-                usage (right-trim optional):
-                  rinne {CommandName}
-                  rinne {CommandName} <space>
-                  rinne {CommandName} <old_id> <new_id>
-                  rinne {CommandName} <old_id> <new_id> <space>
-                  rinne {CommandName} -h | --help
-
-                description:
-                  .rinne/data/<space>/ の ZIP スナップショットを展開してテキスト差分をすべて表示します。
-                  space を省略すると current を使用します。
-                  id を両方省略すると直近2つの ZIP スナップショットを比較します。
-                """);
+            spaceArg = positionals[0];
+            selA = positionals[1];
+            selB = positionals[2];
         }
-
-        private static void PrintFileHeader(FileTextDiffResult file)
+        else if (positionals.Count == 2)
         {
-            var mark = file.Change switch
-            {
-                FileChangeKind.Added => "[Added   ]",
-                FileChangeKind.Removed => "[Removed ]",
-                FileChangeKind.Modified => "[Modified]",
-                FileChangeKind.Unchanged => "[Same    ]",
-                FileChangeKind.SkippedNonText => "[Skipped ]",
-                _ => "[Unknown ]"
-            };
-
-            var color = file.Change switch
-            {
-                FileChangeKind.Added => ConsoleColor.Green,
-                FileChangeKind.Removed => ConsoleColor.Red,
-                FileChangeKind.Modified => ConsoleColor.Yellow,
-                FileChangeKind.Unchanged => ConsoleColor.DarkGray,
-                FileChangeKind.SkippedNonText => ConsoleColor.DarkGray,
-                _ => ConsoleColor.Gray
-            };
-
-            WriteColoredLine($"{mark} {file.RelativePath}", color);
+            selA = positionals[0];
+            selB = positionals[1];
         }
-
-        private static void WriteColoredLine(string message, ConsoleColor color)
+        else
         {
-            var prev = Console.ForegroundColor;
-            try
+            Console.Error.WriteLine("missing or too many arguments.");
+            Console.WriteLine("Use: " + Usage);
+            return 2;
+        }
+
+        if (string.IsNullOrEmpty(selA) || string.IsNullOrEmpty(selB))
+        {
+            Console.Error.WriteLine("missing <A> and <B>.");
+            Console.WriteLine("Use: " + Usage);
+            return 2;
+        }
+
+        try
+        {
+            var paths = new RinnePaths(Environment.CurrentDirectory);
+
+            var spaceSvc = new SpaceService(paths);
+            var space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+
+            if (!IsValidSpaceName(space))
             {
-                Console.ForegroundColor = color;
-                Console.WriteLine(message);
+                Console.Error.WriteLine($"invalid space name. Use {SpaceNameRules.HumanReadable}");
+                return 2;
             }
-            finally
+
+            var idA = ResolveSelectorToId(paths, space, selA, ct);
+            var idB = ResolveSelectorToId(paths, space, selB, ct);
+
+            var svc = new TextDiffService(paths);
+            var opt = new TextDiffService.Options(
+                IncludeGlobs: null,
+                ExcludeGlobs: null,
+                MaxBytesPerFile: 2L * 1024 * 1024,
+                TempHydrateWhenNeeded: true,
+                HydrateWorkers: 0,
+                HydrateMaxTotalBytes: long.MaxValue,
+                ContextLines: 3,
+                IgnoreTrim: false,
+                NormalizeNewlines: true
+            );
+
+            var result = await svc.DiffTextAsync(space, idA, idB, opt, ct);
+
+            PrintHeader(result, space);
+
+            if (result.Diffs.Count == 0)
             {
-                Console.ForegroundColor = prev;
+                Console.WriteLine("No text changes.");
+                Console.WriteLine("Hint: target is only text under <id>/snapshots (note.md/binary are excluded).");
+                return 0;
+            }
+
+            foreach (var d in result.Diffs)
+            {
+                var tag = d.Status switch
+                {
+                    TextDiffService.FileStatus.Added => "+",
+                    TextDiffService.FileStatus.Removed => "-",
+                    TextDiffService.FileStatus.Modified => "M",
+                    TextDiffService.FileStatus.Renamed => "R",
+                    _ => "?"
+                };
+
+                var name = d.Status == TextDiffService.FileStatus.Added ? d.PathB
+                         : d.Status == TextDiffService.FileStatus.Removed ? d.PathA
+                         : $"{d.PathA} -> {d.PathB}";
+
+                Console.WriteLine($"{tag} {name}");
+
+                if (d.IsBinary)
+                {
+                    Console.WriteLine("(binary file skipped)");
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(d.UnifiedDiffText))
+                    PrintCaretStyle(d.UnifiedDiffText);
+            }
+
+            Console.WriteLine($"Files: {result.Diffs.Count}");
+            return 0;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"textdiff failed: {ex.Message}");
+            return 3;
+        }
+    }
+
+    private static void PrintHeader(TextDiffService.Result r, string space)
+    {
+        Console.WriteLine($"TextDiff [{space}]: {r.IdA} .. {r.IdB}");
+    }
+
+    private static bool IsOption(string s) => s.StartsWith("-", StringComparison.Ordinal);
+
+    private static string TrimQuotes(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        if ((s.Length >= 2) &&
+            ((s[0] == '"' && s[^1] == '"') || (s[0] == '\'' && s[^1] == '\'')))
+            return s.Substring(1, s.Length - 2);
+        return s;
+    }
+
+    private static bool IsValidSpaceName(string name) => SpaceNameRules.NameRegex.IsMatch(name);
+
+    private static string ResolveSelectorToId(RinnePaths paths, string space, string selector, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var spaceDir = paths.SnapshotsSpace(space);
+        if (!Directory.Exists(spaceDir))
+            throw new DirectoryNotFoundException($"space not found: {space}");
+
+        if (selector.Length >= 2 && selector[0] == '@')
+        {
+            if (!int.TryParse(selector.AsSpan(1), out var n) || n < 0)
+                throw new ArgumentException($"invalid @N selector: {selector}");
+
+            var ids = Directory.EnumerateDirectories(spaceDir)
+                               .Select(Path.GetFileName)
+                               .Where(id => !string.IsNullOrWhiteSpace(id)
+                                            && id!.Length >= 8
+                                            && !id.StartsWith("."))
+                               .OrderByDescending(s => s, StringComparer.Ordinal)
+                               .ToList();
+
+            if (ids.Count == 0)
+                throw new InvalidOperationException("no snapshots in space.");
+
+            var index = 1 + n;
+            if (index < 0 || index >= ids.Count)
+                throw new ArgumentOutOfRangeException(nameof(selector), $"@{n} out of range.");
+
+            return ids[index]!;
+        }
+
+        var matches = Directory.EnumerateDirectories(spaceDir)
+                               .Select(Path.GetFileName)
+                               .Where(id => !string.IsNullOrWhiteSpace(id)
+                                            && id!.StartsWith(selector, StringComparison.Ordinal))
+                               .ToList();
+
+        if (matches.Count == 1)
+            return matches[0]!;
+        if (matches.Count > 1)
+            throw new InvalidOperationException($"ambiguous id prefix '{selector}': {string.Join(", ", matches.Take(5))}{(matches.Count > 5 ? ", ..." : "")}");
+        throw new FileNotFoundException($"snapshot not found for selector: {selector}");
+    }
+
+    private static void PrintCaretStyle(string unified)
+    {
+        var lines = unified.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+        int aLine = 0, bLine = 0;
+        var minus = new List<(int num, string text)>();
+        var plus = new List<(int num, string text)>();
+
+        foreach (var raw in lines)
+        {
+            var line = raw;
+            if (line.StartsWith("@@ "))
+            {
+                Flush(minus, plus);
+                ParseHunkHeader(line, out aLine, out bLine);
+                minus.Clear(); plus.Clear();
+                continue;
+            }
+            if (line.StartsWith("--- ") || line.StartsWith("+++ "))
+                continue;
+
+            if (line.Length == 0)
+                continue;
+
+            var kind = line[0];
+            var payload = line.Length > 1 ? line.Substring(1) : string.Empty;
+
+            if (kind == ' ')
+            {
+                Flush(minus, plus);
+                aLine++; bLine++;
+            }
+            else if (kind == '-')
+            {
+                minus.Add((aLine + 1, payload));
+                aLine++;
+            }
+            else if (kind == '+')
+            {
+                plus.Add((bLine + 1, payload));
+                bLine++;
             }
         }
 
-        /// <summary>未知オプション検出（- で始まり、許可済み以外）。</summary>
-        private static bool IsUnknownOption(string token)
-            => token.StartsWith('-') && token is not "-h" and not "--help";
+        Flush(minus, plus);
+
+        static void ParseHunkHeader(string s, out int aStart, out int bStart)
+        {
+            aStart = 0; bStart = 0;
+            var i1 = s.IndexOf('-'); var i2 = s.IndexOf(' ', i1 + 1);
+            var j1 = s.IndexOf('+', i2 + 1); var j2 = s.IndexOf(' ', j1 + 1);
+            var aTok = s.Substring(i1 + 1, i2 - (i1 + 1));
+            var bTok = s.Substring(j1 + 1, j2 - (j1 + 1));
+            var aComma = aTok.IndexOf(',');
+            var bComma = bTok.IndexOf(',');
+            aStart = int.Parse(aComma >= 0 ? aTok.Substring(0, aComma) : aTok);
+            bStart = int.Parse(bComma >= 0 ? bTok.Substring(0, bComma) : bTok);
+            aStart--; bStart--;
+        }
+
+        static void Flush(List<(int num, string text)> minus, List<(int num, string text)> plus)
+        {
+            if (minus.Count == 0 && plus.Count == 0) return;
+            var n = Math.Max(minus.Count, plus.Count);
+            for (int i = 0; i < n; i++)
+            {
+                var hasOld = i < minus.Count;
+                var hasNew = i < plus.Count;
+                var oldNum = hasOld ? minus[i].num : (hasNew ? plus[i].num : 0);
+                var newNum = hasNew ? plus[i].num : (hasOld ? minus[i].num : 0);
+                var oldText = hasOld ? minus[i].text : string.Empty;
+                var newText = hasNew ? plus[i].text : string.Empty;
+
+                Console.WriteLine($"L{oldNum}-");
+                Console.WriteLine(oldText);
+                Console.WriteLine($"L{newNum}+");
+                Console.WriteLine(newText);
+
+                var target = newText.Length > 0 ? newText : oldText;
+                var pref = CommonPrefixLen(oldText, newText);
+                var suff = CommonSuffixLen(oldText, newText, pref);
+                var len = Math.Max(1, target.Length - pref - suff);
+                Console.WriteLine(new string(' ', pref) + new string('^', len));
+            }
+            minus.Clear(); plus.Clear();
+        }
+
+        static int CommonPrefixLen(string a, string b)
+        {
+            var n = Math.Min(a.Length, b.Length);
+            int i = 0;
+            for (; i < n; i++) if (a[i] != b[i]) break;
+            return i;
+        }
+
+        static int CommonSuffixLen(string a, string b, int skipPrefix)
+        {
+            int ai = a.Length - 1, bi = b.Length - 1, c = 0, minStop = skipPrefix;
+            while (ai >= minStop && bi >= minStop && a[ai] == b[bi]) { c++; ai--; bi--; }
+            return c;
+        }
     }
 }

@@ -1,242 +1,269 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
-using Rinne.Cli.Utilities;
-using System.IO.Compression;
-using System.Security.Cryptography;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Meta;
+using Rinne.Core.Features.Notes;
+using Rinne.Core.Features.Recompose;
+using Rinne.Core.Features.Space;
+using System.Globalization;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class RecomposeCommand : ICliCommand
 {
-    /// <summary>
-    /// 複数スナップショット（ZIP）を優先度順に合成し、指定の出力 space へ保存するコマンド。
-    /// </summary>
-    public sealed class RecomposeCommand : ICliCommand
+    public string Name => "recompose";
+    public IEnumerable<string> Aliases => new[] { "rc" };
+    public string Summary => $"Compose multiple snapshots (left-most wins) into a new snapshot; then write meta.json and ensure <id>/{NoteService.DefaultFileName} (write text if -m).";
+    public string Usage => """
+            Usage:
+              rinne recompose [<target-space>] --src <spec> [--src <spec> ...] [options] [-m <text>]
+              rinne recompose --space <target-space> --src <spec> [--src <spec> ...] [options] [-m <text>]
+
+            Spec:
+              <spec> := [space:]<idprefix> | [space:]@<N>
+                - <idprefix> : Unique snapshot id prefix (e.g., 20251111T..., 018EF9...)
+                - @<N>       : N back from newest (0=latest), e.g., @0, @1, @2
+                - Optional leading "space:" selects source space; omitted => target space
+
+            Options:
+              --hydrate             If a source is missing payload, hydrate persistently
+              --hydrate=ephemeral   If a source is missing payload, hydrate temporarily (alias: --hydrate=tmp)
+              -m, --message <text>  Initial note to save as '<id>/note.md' (no overwrite here; use 'rinne note' later)
+            """;
+
+    private readonly RinnePaths _paths = new(Environment.CurrentDirectory);
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "recompose";
+        string? spaceArg = null;
+        var sources = new List<RecomposeService.SourceSpec>();
 
-        /// <summary>合成結果を保存するサービス。</summary>
-        private readonly ISaveService _save;
+        bool autoHydrate = false;
+        bool ephemeralHydrate = false;
+        string? messageText = null;
 
-        public RecomposeCommand(ISaveService save)
+        for (int i = 0; i < args.Length; i++)
         {
-            _save = save ?? throw new ArgumentNullException(nameof(save));
-        }
+            ct.ThrowIfCancellationRequested();
+            var a = args[i];
 
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: > 0 } && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <summary>
-        /// 合成および保存処理を実行する。
-        /// </summary>
-        /// <param name="args">構文: recompose &lt;outspace&gt; &lt;space1&gt; &lt;id1&gt; , &lt;space2&gt; &lt;id2&gt; , ...</param>
-        /// <param name="cancellationToken">キャンセルトークン。</param>
-        /// <returns>0=成功, 1=一般エラー, 2=入力エラー, 3=ファイル未検出, 130=中断。</returns>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
-        {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
+            if (a == "-m" || a == "--message")
             {
-                PrintHelp();
-                return 0;
+                messageText = NeedSrcValue(args, ref i, a);
+                continue;
             }
 
+            if (!a.StartsWith("--", StringComparison.Ordinal))
+            {
+                if (spaceArg is null) { spaceArg = a; continue; }
+                Console.Error.WriteLine($"unknown argument: {a}");
+                Console.WriteLine(Usage);
+                return 2;
+            }
+
+            switch (a)
+            {
+                case "--space":
+                    spaceArg = NeedSrcValue(args, ref i, "--space");
+                    break;
+
+                case "--src":
+                case "--from":
+                case "--source":
+                    {
+                        var spec = NeedSrcValue(args, ref i, a);
+                        sources.Add(ParseSourceSpec(spec));
+                        break;
+                    }
+
+                case "--hydrate":
+                    if (a.Contains('='))
+                    {
+                        var mode = a[(a.IndexOf('=') + 1)..].Trim();
+                        if (mode.Equals("ephemeral", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("tmp", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ephemeralHydrate = true; autoHydrate = false;
+                        }
+                        else if (mode.Equals("persist", StringComparison.OrdinalIgnoreCase) ||
+                                 mode.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                                 mode.Length == 0)
+                        {
+                            autoHydrate = true; ephemeralHydrate = false;
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine("invalid --hydrate value. use: --hydrate, or --hydrate=ephemeral|tmp");
+                            return 2;
+                        }
+                    }
+                    else
+                    {
+                        autoHydrate = true; ephemeralHydrate = false;
+                    }
+                    break;
+
+                default:
+                    if (a.StartsWith("--hydrate=", StringComparison.Ordinal))
+                    {
+                        var mode = a["--hydrate=".Length..].Trim();
+                        if (mode.Equals("ephemeral", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("tmp", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ephemeralHydrate = true; autoHydrate = false; break;
+                        }
+                        if (mode.Equals("persist", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Length == 0)
+                        {
+                            autoHydrate = true; ephemeralHydrate = false; break;
+                        }
+                        Console.Error.WriteLine("invalid --hydrate value. use: --hydrate, or --hydrate=ephemeral|tmp");
+                        return 2;
+                    }
+
+                    Console.Error.WriteLine($"unknown option: {a}");
+                    Console.WriteLine(Usage);
+                    return 2;
+            }
+        }
+
+        if (sources.Count == 0)
+        {
+            Console.Error.WriteLine("at least one --src <spec> is required.");
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        var spaceSvc = new SpaceService(_paths);
+        string targetSpace;
+        try
+        {
+            targetSpace = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+
+        var normalizedSources = sources.Select(s => s with { Space = string.IsNullOrWhiteSpace(s.Space) ? targetSpace : s.Space })
+                                       .ToList();
+
+        var service = new RecomposeService(_paths);
+        var opt = new RecomposeService.Options(
+            TargetSpace: targetSpace,
+            Sources: normalizedSources,
+            NewSnapshotId: null,
+            AutoHydrate: autoHydrate,
+            EphemeralHydrate: ephemeralHydrate
+        );
+
+        var res = await service.RunAsync(opt, ct);
+
+        if (!res.Created)
+        {
+            Console.Error.WriteLine($"recompose failed: {res.Error}");
+            return 1;
+        }
+
+        var finalSnapDir = _paths.Snapshot(targetSpace, res.NewSnapshotId!);
+
+        try
+        {
+            var metaService = new MetaService();
+            var meta = metaService.WriteMeta(finalSnapDir, ct);
+            Console.WriteLine($"Meta: v={meta.Version}, hash={meta.SnapshotHash}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"failed to write meta.json: {ex.Message}");
+            return 4;
+        }
+
+        var noteService = new NoteService();
+
+        var created = noteService.Ensure(finalSnapDir, NoteService.DefaultFileName, ensureUtf8Bom: true);
+
+        if (!string.IsNullOrEmpty(messageText))
+        {
             try
             {
-                var layout = new RepositoryLayout(Directory.GetCurrentDirectory());
-                if (!Directory.Exists(layout.RinneDir))
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: .rinne が見つかりません。先に 'rinne init' を実行してください。");
-                    return 2;
-                }
-
-                // 厳格パース： outspace と <space,id>ペア群のみを受理。未知オプションはエラー
-                if (args.Length < 2)
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: outspace と <space> <id> のペアを指定してください。");
-                    PrintHelp();
-                    return 2;
-                }
-
-                var outSpace = args[1].Trim();
-                if (string.IsNullOrWhiteSpace(outSpace) || IsOptionLike(outSpace))
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: outspace が不正です。");
-                    return 2;
-                }
-
-                // outspace 以降のトークンから <space,id> ペアを抽出（',' はセパレータとして無視）
-                var pairs = ParseSpaceIdPairsStrict(args.Skip(2));
-                if (pairs is null || pairs.Count == 0)
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: <space> <id> のペアを 1 つ以上、正しく指定してください。");
-                    PrintHelp();
-                    return 2;
-                }
-
-                // 一時出力先
-                Directory.CreateDirectory(layout.TempDir);
-                var outName = $"{CommandName}{DateTime.UtcNow:yyyyMMddTHHmmss}_{RandomSuffix(6)}".ToLowerInvariant();
-                var outDir = Path.Combine(layout.TempDir, outName);
-
-                var extractedRoots = new List<string>(pairs.Count);
-
-                try
-                {
-                    // 1) ZIP 展開（優先度=指定順）
-                    for (int i = 0; i < pairs.Count; i++)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        var (space, id) = pairs[i];
-                        var dataDir = layout.GetSpaceDataDir(space);
-
-                        // id は .zip 省略可
-                        var candidate = Path.Combine(dataDir, id);
-                        var zipPath = candidate.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
-                            ? candidate
-                            : candidate + ".zip";
-
-                        if (!File.Exists(zipPath))
-                        {
-                            // 念のため、ユーザーが拡張子付きで入れていた場合も再確認
-                            if (!File.Exists(candidate))
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 未検出: ZIP が見つかりません: {zipPath}");
-                                return 3;
-                            }
-                            zipPath = candidate;
-                        }
-
-                        var extractDir = Path.Combine(layout.TempDir, $"{Path.GetFileNameWithoutExtension(Path.GetFileName(zipPath))}_src{i + 1}");
-                        if (Directory.Exists(extractDir))
-                            Directory.Delete(extractDir, recursive: true);
-
-                        ZipFile.ExtractToDirectory(zipPath, extractDir);
-                        extractedRoots.Add(extractDir);
-
-                        Console.WriteLine($"[info] extracted: {zipPath} -> {extractDir}");
-                    }
-
-                    // 2) 合成
-                    var result = await FolderRecomposer.RecomposeAsync(
-                        destinationRoot: outDir,
-                        sourceRoots: extractedRoots,
-                        cancellationToken: cancellationToken
-                    );
-
-                    Console.WriteLine($"[ok] recompose done: {result.Destination}");
-                    Console.WriteLine($"      sources: {string.Join(", ", result.Sources.Select(Path.GetFileName))}");
-                    Console.WriteLine($"      dirs: +{result.CreatedDirectories}, files: +{result.CopiedFiles}, chosen: {result.TotalChosenEntries}");
-
-                    // 3) outSpace へセーブ
-                    var message = BuildRecomposeMessage(outSpace, pairs);
-                    var save = await _save.SaveAsync(
-                        repoRoot: layout.RepoRoot,
-                        targetRoot: outDir,
-                        space: outSpace,
-                        message: message,
-                        cancellationToken: cancellationToken
-                    );
-
-                    Console.WriteLine($"[ok] saved: space={save.Space}, id={save.Id}");
-                    Console.WriteLine($"     zip:  {save.ZipPath}");
-                    if (!string.IsNullOrEmpty(save.MetaPath))
-                        Console.WriteLine($"     meta: {save.MetaPath}");
-
-                    return 0;
-                }
-                catch (OperationCanceledException)
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 中断されました。");
-                    return 130;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 失敗: {ex.Message}");
-                    return 1;
-                }
-                finally
-                {
-                    // 4) クリーンアップ
-                    foreach (var dir in extractedRoots)
-                    {
-                        try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
-                        catch { /* noop */ }
-                    }
-                    try { if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true); }
-                    catch { /* noop */ }
-                }
+                noteService.Write(finalSnapDir, new NoteService.WriteOptions(
+                    Text: messageText,
+                    FileName: NoteService.DefaultFileName,
+                    Overwrite: created,
+                    EnsureUtf8Bom: true,
+                    UseCrLf: true
+                ), ct);
+                Console.WriteLine("Note: written to note.md");
+            }
+            catch (IOException)
+            {
+                Console.Error.WriteLine("Note: note.md already exists; not overwritten here. Use 'rinne note' to modify.");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: {ex.Message}");
-                return 1;
+                Console.Error.WriteLine($"failed to write note.md: {ex.Message}");
+                return 5;
             }
         }
-
-        /// <inheritdoc/>
-        public void PrintHelp()
+        else
         {
-            Console.WriteLine($"""                
-                usage:
-                  rinne {CommandName} <outspace> <space1> <id1> , <space2> <id2> , ...
-                  rinne {CommandName} -h | --help
-
-                description:
-                  - 先に指定したペアほど優先度が高く、同一路径の競合は先勝ちです。
-                  - 各 <id> は .rinne/data/<space>/<id>.zip を参照（.zip 省略可）。
-                  - 合成結果は一時ディレクトリで作成後、<outspace> に対して新規セーブとして保存します。
-                """);
+            Console.WriteLine(created ? "Note: created empty note.md" : "Note: note.md already exists");
         }
 
-        /// <summary>
-        /// トークン列から &lt;space&gt; &lt;id&gt; のペアを厳格抽出（未知オプションや不正個数は null を返す）。
-        /// </summary>
-        private static List<(string space, string id)>? ParseSpaceIdPairsStrict(IEnumerable<string> tokens)
+        Console.WriteLine($"recompose ok: {res.NewSnapshotId}");
+        Console.WriteLine($"  space   : {targetSpace}");
+        Console.WriteLine($"  payload : {res.OutputPayloadDir}");
+        Console.WriteLine($"  from    : {string.Join(" + ", res.ResolvedIds)}");
+        Console.WriteLine($"  made    : dirs={res.DirsCreated}, files={res.FilesCopied}");
+        return 0;
+    }
+
+    static string NeedSrcValue(string[] args, ref int i, string opt)
+    {
+        if (i + 1 >= args.Length)
+            throw new ArgumentException($"missing value for {opt}");
+
+        var v = args[i + 1];
+        if (v.StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException(
+                $"missing value for {opt}. If your value begins with '@' in PowerShell, quote it like: --src '@0'.");
+
+        i++;
+        return v;
+    }
+
+    private static RecomposeService.SourceSpec ParseSourceSpec(string spec)
+    {
+        spec = spec?.Trim() ?? throw new ArgumentException("invalid --src: empty");
+        string? space = null;
+        string body = spec;
+
+        var idx = spec.IndexOf(':');
+        if (idx >= 0)
         {
-            // ',' はセパレータとして無視。'-'で始まるトークンは未知オプションとしてエラー。
-            var cleaned = new List<string>();
-            foreach (var t in tokens)
-            {
-                var tok = t?.Trim();
-                if (string.IsNullOrEmpty(tok)) continue;
-                if (tok == ",") continue;
-                if (IsOptionLike(tok)) return null; // 未知オプションはエラー
-                cleaned.Add(tok);
-            }
-
-            if (cleaned.Count == 0 || cleaned.Count % 2 != 0) return null;
-
-            var list = new List<(string space, string id)>(cleaned.Count / 2);
-            for (int i = 0; i < cleaned.Count; i += 2)
-            {
-                var space = cleaned[i];
-                var id = cleaned[i + 1];
-                if (string.IsNullOrWhiteSpace(space) || string.IsNullOrWhiteSpace(id)) return null;
-                list.Add((space, id));
-            }
-            return list;
+            space = spec[..idx];
+            body = spec[(idx + 1)..];
+            if (space.Length == 0)
+                throw new ArgumentException("invalid --src: empty space before ':'");
         }
 
-        /// <summary>セーブメッセージを合成元一覧から組み立てる。</summary>
-        private static string BuildRecomposeMessage(string outSpace, IReadOnlyList<(string space, string id)> pairs)
-        {
-            var sources = string.Join(" | ", pairs.Select(p => $"{p.space}/{p.id}"));
-            return $"{CommandName} to {outSpace}: {sources}";
-        }
+        if (string.IsNullOrWhiteSpace(body))
+            throw new ArgumentException("invalid --src: empty selector.");
 
-        /// <summary>ランダムな16進サフィックスを生成する。</summary>
-        private static string RandomSuffix(int bytes)
-        {
-            Span<byte> buf = stackalloc byte[bytes];
-            RandomNumberGenerator.Fill(buf);
-            return Convert.ToHexString(buf).ToLowerInvariant();
-        }
+        if (body.StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException("invalid --src value. In PowerShell, quote '@N' like: --src '@0'");
 
-        /// <summary>トークンがオプション風（- で始まる）かどうか。</summary>
-        private static bool IsOptionLike(string token)
-            => token.StartsWith("-", StringComparison.Ordinal);
+        if (body[0] == '@')
+        {
+            if (!int.TryParse(body[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n < 0)
+                throw new ArgumentException("invalid --src '@N': N must be a non-negative integer.");
+            return new RecomposeService.SourceSpec(space, IdPrefix: null, NthFromNewest: n);
+        }
+        else
+        {
+            return new RecomposeService.SourceSpec(space, IdPrefix: body, NthFromNewest: null);
+        }
     }
 }

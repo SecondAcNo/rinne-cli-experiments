@@ -10,10 +10,11 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ソリューション項目
 		.gitattributes = .gitattributes
 		.gitignore = .gitignore
 		LICENSE = LICENSE
-		README.en.md = README.en.md
-		README.md = README.md
 		THIRD_PARTY_NOTICES.txt = THIRD_PARTY_NOTICES.txt
+		README.md = README.md
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rinne.Core", "Rinne.Core\Rinne.Core.csproj", "{DE9DC661-B607-4706-AA70-25F0B53BA810}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -25,6 +26,10 @@ Global
 		{D3035AC0-10A3-4C36-82BA-D651D8FF8E07}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D3035AC0-10A3-4C36-82BA-D651D8FF8E07}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D3035AC0-10A3-4C36-82BA-D651D8FF8E07}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DE9DC661-B607-4706-AA70-25F0B53BA810}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DE9DC661-B607-4706-AA70-25F0B53BA810}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DE9DC661-B607-4706-AA70-25F0B53BA810}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DE9DC661-B607-4706-AA70-25F0B53BA810}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

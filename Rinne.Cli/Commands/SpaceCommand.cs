@@ -1,259 +1,200 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Features.Space;
+using Rinne.Core.Common;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class SpaceCommand : ICliCommand
 {
-    /// <summary>
-    /// 作業空間（space）を操作するコマンド。
-    /// </summary>
-    /// <remarks>実処理は <see cref="ISpaceService"/> に委譲する。</remarks>
-    public sealed class SpaceCommand : ICliCommand
+    public string Name => "space";
+    public IEnumerable<string> Aliases => Array.Empty<string>();
+    public string Summary => "List/Create/Use/Rename/Current/Delete spaces under .rinne/snapshots/space/<name>/";
+    public string Usage => """
+        Usage:
+            rinne space list
+            rinne space create <name>
+            rinne space use <name>
+            rinne space rename <old> <new>
+            rinne space current
+            rinne space delete <name>
+
+        Description:
+            Manage snapshot spaces in the current Rinne repository.
+
+            A "space" is an independent timeline of snapshots.
+            Each space has its own history and does not affect other spaces.
+            This is similar to Git branches, but spaces always store full snapshots.
+
+        Commands:
+            list
+                Show all existing spaces.
+
+            create <name>
+                Create a new empty space.
+                Fails if the name already exists.
+
+            use <name>
+                Switch the active space.
+                Updates `.rinne/snapshots/current` to point to <name>.
+
+            rename <old> <new>
+                Rename an existing space.
+                Fails if <new> already exists.
+
+            current
+                Show the name of the active space.
+
+            delete <name>
+                Delete the specified space entirely (all snapshots under that space).
+                Fails if the space does not exist.
+                Fails if the space is current (active).
+                Safe by default: does not touch other spaces.
+        """;
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "space";
-
-        /// <summary>作業空間操作サービス。</summary>
-        private readonly ISpaceService _space;
-
-        public SpaceCommand(ISpaceService space)
-            => _space = space ?? throw new ArgumentNullException(nameof(space));
-
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args.Length > 0 && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+        try
         {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
+            if (args.Length == 0 || IsHelp(args[0]))
             {
-                PrintHelp();
+                Console.WriteLine(Summary);
+                Console.WriteLine("Use:\n" + Usage);
                 return 0;
             }
 
-            if (args.Length < 2)
+            var sub = args[0];
+            var svc = new SpaceService(new RinnePaths(Environment.CurrentDirectory));
+
+            switch (sub)
             {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: サブコマンドが必要です。");
-                PrintHelp();
-                return 1;
-            }
-
-            var sub = args[1].ToLowerInvariant();
-            var repoRoot = Directory.GetCurrentDirectory();
-
-            try
-            {
-                // tail はサブコマンド以降
-                var tail = args.Skip(2).ToArray();
-
-                switch (sub)
-                {
-                    case "current":
+                case "list":
+                    {
+                        if (args.Length != 1)
                         {
-                            if (tail.Length > 0)
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 'current' は引数を受け付けません。");
-                                return 1;
-                            }
-                            var cur = await _space.GetCurrentAsync(repoRoot, cancellationToken);
-                            Console.WriteLine(string.IsNullOrWhiteSpace(cur) ? "(none)" : cur);
+                            Console.Error.WriteLine("too many arguments.");
+                            Console.WriteLine("Use:\n" + Usage);
+                            return 2;
+                        }
+
+                        var current = svc.GetCurrent();
+                        var spaces = svc.List().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToArray();
+
+                        if (spaces.Length == 0)
+                        {
+                            Console.WriteLine("(no spaces)");
                             return 0;
                         }
 
-                    case "list":
+                        foreach (var s in spaces)
                         {
-                            if (tail.Length > 0)
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 'list' は引数を受け付けません。");
-                                return 1;
-                            }
-                            var list = await _space.ListAsync(repoRoot, cancellationToken);
-                            var cur = await _space.GetCurrentAsync(repoRoot, cancellationToken) ?? string.Empty;
+                            var mark = IsWindows()
+                                ? (string.Equals(s, current, StringComparison.OrdinalIgnoreCase) ? "*" : " ")
+                                : (s == current ? "*" : " ");
+                            Console.WriteLine($"{mark} {s}");
+                        }
+                        return 0;
+                    }
 
-                            if (list.Length == 0)
-                            {
-                                Console.WriteLine("(no spaces)");
-                                return 0;
-                            }
+                case "create":
+                    {
+                        if (args.Length != 2)
+                        {
+                            Console.Error.WriteLine(args.Length < 2 ? "space name is required." : "too many arguments.");
+                            Console.WriteLine("Use:\nrinne space create <name>");
+                            return 2;
+                        }
+                        if (IsOption(args[1])) { UnknownOption(args[1]); return 2; }
 
-                            foreach (var p in list)
-                            {
-                                var mark = string.Equals(p, cur, StringComparison.Ordinal) ? "*" : " ";
-                                Console.WriteLine($"{mark} {p}");
-                            }
-                            return 0;
+                        svc.Create(args[1], ct);
+                        Console.WriteLine($"created space '{args[1]}'.");
+                        return 0;
+                    }
+
+                case "use":
+                    {
+                        if (args.Length != 2)
+                        {
+                            Console.Error.WriteLine(args.Length < 2 ? "space name is required." : "too many arguments.");
+                            Console.WriteLine("Use:\nrinne space use <name>");
+                            return 2;
+                        }
+                        if (IsOption(args[1])) { UnknownOption(args[1]); return 2; }
+
+                        svc.Use(args[1], ct);
+                        Console.WriteLine($"current space = '{svc.GetCurrent()}'.");
+                        return 0;
+                    }
+
+                case "rename":
+                    {
+                        if (args.Length != 3)
+                        {
+                            Console.Error.WriteLine(args.Length < 3 ? "old and new names are required." : "too many arguments.");
+                            Console.WriteLine("Use:\nrinne space rename <old> <new>");
+                            return 2;
+                        }
+                        if (IsOption(args[1]) || IsOption(args[2]))
+                        {
+                            UnknownOption(IsOption(args[1]) ? args[1] : args[2]);
+                            return 2;
                         }
 
-                    case "select":
+                        var oldName = args[1];
+                        var newName = args[2];
+                        svc.Rename(oldName, newName, ct);
+                        Console.WriteLine($"renamed '{oldName}' -> '{newName}'. current space = '{svc.GetCurrent()}'.");
+                        return 0;
+                    }
+
+                case "current":
+                    {
+                        if (args.Length != 1)
                         {
-                            // 許可オプション: --create
-                            // 構文: select <name> [--create]
-                            if (tail.Length is < 1 or > 2)
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。usage: rinne {CommandName} select <name> [--create]");
-                                return 1;
-                            }
-
-                            string? name = null;
-                            bool create = false;
-
-                            foreach (var t in tail)
-                            {
-                                if (t.StartsWith("-", StringComparison.Ordinal))
-                                {
-                                    if (t.Equals("--create", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        if (create) { Console.Error.WriteLine($"[{CommandName}] 失敗: '--create' が重複しています。"); return 1; }
-                                        create = true;
-                                    }
-                                    else
-                                    {
-                                        Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{t}'");
-                                        return 1;
-                                    }
-                                }
-                                else
-                                {
-                                    if (name is not null)
-                                    {
-                                        Console.Error.WriteLine($"[{CommandName}] 失敗: 余分な引数 '{t}'");
-                                        return 1;
-                                    }
-                                    name = t;
-                                }
-                            }
-
-                            if (string.IsNullOrWhiteSpace(name))
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: Space 名が必要です。usage: rinne {CommandName} select <name> [--create]");
-                                return 1;
-                            }
-
-                            await _space.SelectAsync(repoRoot, name, create, cancellationToken);
-                            Console.WriteLine($"Selected space: {name}");
-                            return 0;
+                            Console.Error.WriteLine("too many arguments.");
+                            Console.WriteLine("Use:\nrinne space current");
+                            return 2;
                         }
 
-                    case "create":
+                        var name = svc.GetCurrentSpaceFromPointer();
+                        Console.WriteLine(name);
+                        return 0;
+                    }
+
+                case "delete":
+                    {
+                        if (args.Length != 2)
                         {
-                            // 構文: create <name>（オプションなし）
-                            if (tail.Length != 1 || tail[0].StartsWith("-", StringComparison.Ordinal))
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。usage: rinne {CommandName} create <name>");
-                                return 1;
-                            }
-                            var name = tail[0];
-                            await _space.CreateAsync(repoRoot, name, cancellationToken);
-                            Console.WriteLine($"Created space: {name}");
-                            return 0;
+                            Console.Error.WriteLine(args.Length < 2 ? "space name is required." : "too many arguments.");
+                            Console.WriteLine("Use:\nrinne space delete <name>");
+                            return 2;
                         }
+                        if (IsOption(args[1])) { UnknownOption(args[1]); return 2; }
 
-                    case "rename":
-                        {
-                            // 構文: rename <old> <new>（オプションなし）
-                            if (tail.Length != 2 || tail.Any(t => t.StartsWith("-", StringComparison.Ordinal)))
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。usage: rinne {CommandName} rename <old> <new>");
-                                return 1;
-                            }
-                            var oldRaw = tail[0];
-                            var newRaw = tail[1];
+                        svc.Delete(args[1], ct);
+                        Console.WriteLine($"deleted space '{args[1]}'.");
+                        return 0;
+                    }
 
-                            await _space.RenameAsync(repoRoot, oldRaw, newRaw, cancellationToken);
-                            Console.WriteLine($"Renamed space: {oldRaw} -> {newRaw}");
-                            return 0;
-                        }
-
-                    case "delete":
-                        {
-                            // 許可オプション: --force
-                            // 構文: delete <name> [--force]
-                            if (tail.Length is < 1 or > 2)
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。usage: rinne {CommandName} delete <name> [--force]");
-                                return 1;
-                            }
-
-                            string? name = null;
-                            bool force = false;
-
-                            foreach (var t in tail)
-                            {
-                                if (t.StartsWith("-", StringComparison.Ordinal))
-                                {
-                                    if (t.Equals("--force", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        if (force) { Console.Error.WriteLine($"[{CommandName}] 失敗: '--force' が重複しています。"); return 1; }
-                                        force = true;
-                                    }
-                                    else
-                                    {
-                                        Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{t}'");
-                                        return 1;
-                                    }
-                                }
-                                else
-                                {
-                                    if (name is not null)
-                                    {
-                                        Console.Error.WriteLine($"[{CommandName}] 失敗: 余分な引数 '{t}'");
-                                        return 1;
-                                    }
-                                    name = t;
-                                }
-                            }
-
-                            if (string.IsNullOrWhiteSpace(name))
-                            {
-                                Console.Error.WriteLine($"[{CommandName}] 失敗: Space 名が必要です。usage: rinne {CommandName} delete <name> [--force]");
-                                return 1;
-                            }
-
-                            await _space.DeleteAsync(repoRoot, name, force, cancellationToken);
-                            Console.WriteLine($"Deleted space: {name}");
-                            return 0;
-                        }
-
-                    default:
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なサブコマンド '{sub}'");
-                        PrintHelp();
-                        return 1;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Console.Error.WriteLine("Operation cancelled.");
-                return 2;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Error: {ex.Message}");
-                return 3;
+                default:
+                    Console.Error.WriteLine($"unknown subcommand: {sub}");
+                    Console.WriteLine("Use:\n" + Usage);
+                    return 2;
             }
         }
-
-        /// <inheritdoc/>
-        public void PrintHelp()
+        catch (Exception ex)
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName} current
-                  rinne {CommandName} list
-                  rinne {CommandName} select <name> [--create]
-                  rinne {CommandName} create <name>
-                  rinne {CommandName} rename <old> <new>
-                  rinne {CommandName} delete <name> [--force]
-                  rinne {CommandName} -h | --help
-
-                description:
-                  作業空間（space）を一覧・作成・選択・改名・削除します。
-
-                options:
-                  --create   select 時、存在しない作業空間を作成して選択
-                  --force    delete 時、非空でも削除
-                  -h, --help このヘルプを表示
-                """);
+            Console.Error.WriteLine(ex.Message);
+            return 3;
+        }
+        finally
+        {
+            await Task.CompletedTask;
         }
     }
+
+    private static bool IsHelp(string s) => s is "-h" or "--help" or "help";
+    private static bool IsOption(string s) => s.StartsWith("-", StringComparison.Ordinal);
+    private static void UnknownOption(string s)
+        => Console.Error.WriteLine($"unknown option: {s}");
+    private static bool IsWindows() => OperatingSystem.IsWindows();
 }

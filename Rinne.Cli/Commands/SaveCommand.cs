@@ -1,176 +1,261 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Meta;
+using Rinne.Core.Features.Notes;
+using Rinne.Core.Features.Snapshots;
+using Rinne.Core.Features.Space;
+using System.Text.Json;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class SaveCommand : ICliCommand
 {
-    /// <summary>
-    /// 現在のワーキングツリーを Space（空間）にセーブするコマンド。
-    /// </summary>
-    public sealed class SaveCommand : ICliCommand
+    public string Name => "save";
+    public IEnumerable<string> Aliases => new[] { "s" };
+    public string Summary =>
+        $"Create a snapshot under .rinne/snapshots/space/<space>/<id>/. " +
+        $"Always creates <id>/{NoteService.DefaultFileName}; if -m is given, writes text. " +
+        $"Use --compact, --compact-speed, or --compact-full to save directly to CAS (chunk+compression). " +
+        $"Use --hash-none to skip SnapshotHash and write meta with HashAlgorithm=\"skip\".";
+
+    public string Usage => $"""
+        Usage:
+          rinne save [<space>] [-m <text>] [--compact|-c|--compact-speed|--compact-full] [--hash-none]
+
+        Description:
+          - Creates ONE snapshot of the current directory into THIS repository.
+          - If <space> is omitted, it defaults to the current space (see `rinne space current`).
+          - This command ALWAYS creates '<id>/{NoteService.DefaultFileName}'.
+          - If -m/--message is provided, its text is written (initial-only here; later edits via 'rinne note').
+          - If --compact/-c is specified, the snapshot is stored directly to CAS (chunk+compressed) without creating payload files.
+          - If `--compact-speed` is specified, an experimental high-performance compact path is used. 
+            This mode is less tested, uses significantly more memory, and may have undiscovered issues.
+          - If --compact-full is specified, the snapshot is stored directly to CAS with full content verification (no mtime/size-based skip).
+          - If --hash-none is specified, SnapshotHash computation is skipped and meta.json is written with HashAlgorithm="skip" and SnapshotHash="SKIP".
+
+        Examples:
+          rinne save
+          rinne save main -m "first snapshot"
+          rinne save work --compact -m "compact save"
+          rinne save work --compact-speed -m "fast compact (experimental)"
+          rinne save work --compact-full -m "verify all files"
+          rinne save main --hash-none -m "fast meta without content hash"
+        """;
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "save";
+        string? spaceArg = null;
+        string? messageText = null;
+        bool useCompact = false;
+        bool useCompactFull = false;
+        bool useCompactSpeed = false;
+        bool useHashNone = false;
 
-        /// <summary>セーブ処理サービス。</summary>
-        private readonly ISaveService _saveService;
-
-        /// <summary>
-        /// コンストラクタ。セーブサービスを注入する。
-        /// </summary>
-        /// <param name="saveService">ZIP作成・採番・メタ出力等を行うサービス。</param>
-        /// <exception cref="ArgumentNullException"><paramref name="saveService"/> が null の場合。</exception>
-        public SaveCommand(ISaveService saveService)
-            => _saveService = saveService ?? throw new ArgumentNullException(nameof(saveService));
-
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: > 0 } && args[0].Equals(CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+        var positionals = new List<string>();
+        for (int i = 0; i < args.Length; i++)
         {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
-            {
-                PrintHelp();
-                return 0;
-            }
+            ct.ThrowIfCancellationRequested();
+            var a = args[i];
 
+            if (a == "-m" || a == "--message")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("option '-m/--message' requires a value.");
+                    Console.WriteLine("Use: " + Usage);
+                    return 2;
+                }
+                messageText = args[++i];
+            }
+            else if (a == "--compact" || a == "-c")
+            {
+                useCompact = true;
+            }
+            else if (a == "--compact-full")
+            {
+                useCompactFull = true;
+            }
+            else if (a == "--compact-speed")
+            {
+                useCompactSpeed = true;
+            }
+            else if (a == "--hash-none")
+            {
+                useHashNone = true;
+            }
+            else if (IsOption(a))
+            {
+                Console.Error.WriteLine($"unknown option: {a}");
+                Console.WriteLine("Use: " + Usage);
+                return 2;
+            }
+            else
+            {
+                positionals.Add(a);
+            }
+        }
+
+        // --compact 系オプションの排他チェック
+        int compactFlags = 0;
+        if (useCompact) compactFlags++;
+        if (useCompactFull) compactFlags++;
+        if (useCompactSpeed) compactFlags++;
+
+        if (compactFlags > 1)
+        {
+            Console.Error.WriteLine("options --compact, --compact-speed, and --compact-full cannot be used together.");
+            Console.WriteLine("Use: " + Usage);
+            return 2;
+        }
+
+        if (positionals.Count > 1)
+        {
+            Console.Error.WriteLine("too many arguments.");
+            Console.WriteLine("Use: " + Usage);
+            return 2;
+        }
+        if (positionals.Count == 1)
+        {
+            spaceArg = positionals[0];
+        }
+
+        var paths = new RinnePaths(Environment.CurrentDirectory);
+        var spaceSvc = new SpaceService(paths);
+        var space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+
+        if (!IsValidSpaceName(space))
+        {
+            Console.Error.WriteLine($"invalid space name. Use {SpaceNameRules.HumanReadable}");
+            return 2;
+        }
+
+        var opt = new SnapshotOptions(
+            SourceRoot: Environment.CurrentDirectory,
+            Space: space
+        );
+
+        SnapshotResult res;
+        try
+        {
+            if (useCompact || useCompactFull || useCompactSpeed)
+            {
+                if (useCompactSpeed)
+                {
+                    // Experimental faster path (used only for --compact-speed).
+                    // The amount of testing is not sufficient.
+                    var hashMode = useHashNone ? CompactSaverParallelMemory.HashMode.None : CompactSaverParallelMemory.HashMode.Full;
+                    res = await Task.Run(() => CompactSaverParallelMemory.SaveCompact(
+                        opt,
+                        cp: null,
+                        fullHashCheck: useCompactFull, // should always be false here due to mutual exclusion
+                        hashMode: hashMode
+                    ), ct);
+                }
+                else
+                {
+                    var hashMode = useHashNone ? CompactSaverParallel.HashMode.None : CompactSaverParallel.HashMode.Full;
+                    res = await Task.Run(() => CompactSaverParallel.SaveCompact(
+                        opt,
+                        cp: null,
+                        fullHashCheck: useCompactFull,
+                        hashMode: hashMode
+                    ), ct);
+                }
+            }
+            else
+            {
+                var hashMode = useHashNone ? SnapshotSaver.HashMode.None : SnapshotSaver.HashMode.Full;
+                res = await Task.Run(() => SnapshotSaver.Save(opt, hashMode), ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"save failed: {ex.Message}");
+            return 3;
+        }
+
+        Console.WriteLine($"Saved to: {res.TargetDir}");
+        Console.WriteLine($"Files: {res.CopiedFiles}, Bytes: {res.CopiedBytes}");
+
+        if (res.HasErrors)
+        {
+            foreach (var e in res.Errors.Take(5))
+                Console.Error.WriteLine(e);
+            return 3;
+        }
+
+        try
+        {
+            if (useCompact || useCompactFull || useCompactSpeed)
+            {
+                var metaPath = Path.Combine(res.TargetDir, "meta.json");
+                await using var fs = File.OpenRead(metaPath);
+                var meta = await JsonSerializer.DeserializeAsync<SnapshotMeta>(fs, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                }, ct);
+                if (meta is null) throw new InvalidDataException("invalid meta.json");
+                Console.WriteLine($"Meta: v={meta.Version}, hash={meta.SnapshotHash}");
+            }
+            else
+            {
+                var metaService = new MetaService();
+                var meta = metaService.WriteMeta(res.TargetDir, ct);
+                Console.WriteLine($"Meta: v={meta.Version}, hash={meta.SnapshotHash}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"failed to finalize meta.json: {ex.Message}");
+            return 4;
+        }
+
+        var noteService = new NoteService();
+
+        if (!string.IsNullOrEmpty(messageText))
+        {
             try
             {
-                // ===== 厳格パース =====
-                // 受理オプション:
-                //   -s <name> | --space <name> | --space=<name>
-                //   -m <text> | --message <text> | --message=<text>
-                //   -h | --help（単独時のみ）
-                string? space = null;
-                string? message = null;
-                bool seenSpace = false;
-                bool seenMessage = false;
-
-                for (int i = 1; i < args.Length; i++)
-                {
-                    var a = args[i];
-
-                    // 位置引数は非対応（すべてオプションで指定）
-                    if (!a.StartsWith("-", StringComparison.Ordinal))
-                    {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: 位置引数 '{a}' は受け付けません。usage: rinne {CommandName} [-s|--space <name>] [-m|--message <text>]");
-                        return 1;
-                    }
-
-                    // help が他と混在していたらエラー
-                    if (a is "-h" or "--help")
-                    {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: -h/--help は単独で使用してください。");
-                        return 1;
-                    }
-
-                    // --space=NAME
-                    if (a.StartsWith("--space=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (seenSpace) { Console.Error.WriteLine($"[{CommandName}] 失敗: --space が重複しています。"); return 1; }
-                        space = a.Substring("--space=".Length).Trim();
-                        if (string.IsNullOrWhiteSpace(space))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: --space に空文字は指定できません。");
-                            return 1;
-                        }
-                        seenSpace = true;
-                        continue;
-                    }
-
-                    // --space NAME  /  -s NAME
-                    if (a.Equals("--space", StringComparison.OrdinalIgnoreCase) || a.Equals("-s", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (seenSpace) { Console.Error.WriteLine($"[{CommandName}] 失敗: --space/-s が重複しています。"); return 1; }
-                        if (i + 1 >= args.Length)
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: {a} に値が指定されていません。");
-                            return 1;
-                        }
-                        var val = args[++i].Trim();
-                        if (string.IsNullOrWhiteSpace(val))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: --space に空文字は指定できません。");
-                            return 1;
-                        }
-                        space = val;
-                        seenSpace = true;
-                        continue;
-                    }
-
-                    // --message=TEXT
-                    if (a.StartsWith("--message=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (seenMessage) { Console.Error.WriteLine($"[{CommandName}] 失敗: --message が重複しています。"); return 1; }
-                        message = a.Substring("--message=".Length).Trim().Trim('"');
-                        // message は空文字でも可（仕様：省略時は空にするのと同等）
-                        seenMessage = true;
-                        continue;
-                    }
-
-                    // --message TEXT  /  -m TEXT
-                    if (a.Equals("--message", StringComparison.OrdinalIgnoreCase) || a.Equals("-m", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (seenMessage) { Console.Error.WriteLine($"[{CommandName}] 失敗: --message/-m が重複しています。"); return 1; }
-                        if (i + 1 >= args.Length)
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: {a} に値が指定されていません。");
-                            return 1;
-                        }
-                        // メッセージは先頭 '-' でも許容（例: -m "-fix bug"）
-                        message = args[++i].Trim().Trim('"');
-                        seenMessage = true;
-                        continue;
-                    }
-
-                    // ここまで来たら未知オプション
-                    Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{a}'");
-                    return 1;
-                }
-                // ===== パースここまで =====
-
-                var repoRoot = Directory.GetCurrentDirectory();
-
-                var result = await _saveService.SaveAsync(repoRoot, space, message, cancellationToken);
-
-                Console.WriteLine($"[{CommandName}] Saved: {result.Id} (space: {result.Space})");
-                Console.WriteLine($"[zip]  {result.ZipPath}");
-                Console.WriteLine($"[meta] {result.MetaPath}");
-                return 0;
+                noteService.Write(
+                    snapshotRoot: res.TargetDir,
+                    opt: new NoteService.WriteOptions(
+                        Text: messageText,
+                        FileName: NoteService.DefaultFileName,
+                        Overwrite: false,
+                        EnsureUtf8Bom: true,
+                        UseCrLf: true
+                    ),
+                    ct: ct
+                );
+                Console.WriteLine("Note: written to note.md");
             }
-            catch (OperationCanceledException)
+            catch (IOException ioEx)
             {
-                Console.Error.WriteLine($"[{CommandName}] canceled.");
-                return 130;
+                Console.Error.WriteLine($"note.md not written: {ioEx.Message}");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: {ex.Message}");
-                return 1;
+                Console.Error.WriteLine($"failed to write note.md: {ex.Message}");
+                return 5;
             }
         }
-
-        /// <inheritdoc/>
-        public void PrintHelp()
+        else
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName} [-s|--space <name>] [-m|--message <text>]
-                  rinne {CommandName} -h | --help
+            var created = noteService.Ensure(
+                res.TargetDir,
+                NoteService.DefaultFileName,
+                ensureUtf8Bom: true
+            );
 
-                description:
-                  現在のディレクトリを .rinne/data/<space>/ に ZIP スナップショット保存し、
-                  メタデータ (.rinne/data/<space>/meta/<id>.json) も出力します。
-                  --space/-s を省略した場合は current のスペース、なければ 'main' を使用します。
-                  --message/-m を省略した場合は空メッセージとして記録します。
-
-                examples:
-                  rinne {CommandName}
-                  rinne {CommandName} -s work
-                  rinne {CommandName} --space=work --message "refactor: extract SaveService"
-                """);
+            Console.WriteLine(created
+                ? "Note: created empty note.md"
+                : "Note: note.md already exists");
         }
+
+        return 0;
     }
+
+    private static bool IsOption(string s) => s.StartsWith("-", StringComparison.Ordinal);
+
+    private static bool IsValidSpaceName(string name) => SpaceNameRules.NameRegex.IsMatch(name);
 }

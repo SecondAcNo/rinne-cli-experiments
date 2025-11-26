@@ -5,11 +5,12 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>$(SolutionName)</AssemblyName>
+    <AssemblyName>rinne</AssemblyName>
     <ApplicationIcon>rinne_icon.ico</ApplicationIcon>
-	<Version>0.9.0</Version>
-	<AssemblyVersion>0.9.0.0</AssemblyVersion>
-	<FileVersion>0.9.0.0</FileVersion>
+	<Version>0.9.1</Version>
+	<AssemblyVersion>0.9.1.0</AssemblyVersion>
+	<AssemblyInformationalVersion>0.9.1</AssemblyInformationalVersion>
+	<FileVersion>0.9.1.0</FileVersion>
 	<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 	<ContinuousIntegrationBuild>false</ContinuousIntegrationBuild>
   </PropertyGroup>
@@ -19,8 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="DiffPlex" Version="1.9.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
+    <ProjectReference Include="..\Rinne.Core\Rinne.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,7 +1,7 @@
 THIRD-PARTY NOTICES
 ===================
 
-This project, RINNE CLI, is licensed under the MIT License.
+This project, Rinne, is licensed under the Mozilla Public License 2.0 (MPL-2.0).
 
 It also includes or depends upon third-party software components
 that are licensed under different terms. These notices are provided
@@ -28,10 +28,61 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+No modifications were made to the DiffPlex source code.
+It is included only as a dependency of the Rinne project.
+
+
+----------------------------------------------------------------------
+Component: Microsoft.Data.Sqlite
+URL: https://www.nuget.org/packages/Microsoft.Data.Sqlite
+License: MIT License
 ----------------------------------------------------------------------
 
-No modifications were made to the DiffPlex source code.
-It is included only as a dependency of RINNE CLI.
+Copyright © .NET Foundation and Contributors
+
+Microsoft.Data.Sqlite is licensed under the MIT License.
+The full text of the license is available at:
+
+    https://licenses.nuget.org/MIT
+
+No modifications were made to the Microsoft.Data.Sqlite source code.
+It is included only as a NuGet dependency of Rinne (CLI / Core).
+
+
+----------------------------------------------------------------------
+Component: Microsoft.Extensions.FileSystemGlobbing
+URL: https://www.nuget.org/packages/Microsoft.Extensions.FileSystemGlobbing
+License: MIT License
+----------------------------------------------------------------------
+
+Copyright © .NET Foundation and Contributors
+
+Microsoft.Extensions.FileSystemGlobbing is licensed under the MIT License.
+The full text of the license is available at:
+
+    https://licenses.nuget.org/MIT
+
+No modifications were made to the Microsoft.Extensions.FileSystemGlobbing
+source code. It is included only as a NuGet dependency of Rinne
+(for file pattern/glob matching).
+
+
+----------------------------------------------------------------------
+Component: ZstdSharp.Port
+URL: https://www.nuget.org/packages/ZstdSharp.Port
+License: MIT License
+----------------------------------------------------------------------
+
+Copyright © Oleg Stepanischev
+
+ZstdSharp.Port is licensed under the MIT License.
+The full text of the license is available at:
+
+    https://licenses.nuget.org/MIT
+
+No modifications were made to the ZstdSharp.Port source code.
+It is included only as a NuGet dependency of Rinne
+(for Zstandard compression support).
 
 
 ----------------------------------------------------------------------

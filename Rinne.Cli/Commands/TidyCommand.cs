@@ -1,166 +1,231 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Features.Space;
+using Rinne.Core.Features.Tidy;
+using Rinne.Core.Common;
+using System.Globalization;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class TidyCommand : ICliCommand
 {
-    /// <summary>
-    /// 古いスナップショットを整理（最新 N 件だけ残す）し、meta のチェーンを整えるコマンド。
-    /// </summary>
-    public sealed class TidyCommand : ICliCommand
+    public string Name => "tidy";
+    public IEnumerable<string> Aliases => Array.Empty<string>();
+    public string Summary => "Delete snapshots by selector (--keep/--before/--latest/--match), then run CAS GC.";
+
+    public string Usage => """
+            Usage:
+              rinne tidy [<space>] <selector> [options...]
+              rinne tidy --space <space> <selector> [options...]
+
+            Selectors (exactly one; mutually exclusive):
+              --keep N               Keep the latest N snapshots; delete older ones
+              --latest N | --newest N
+                                     Delete the newest N snapshots (opposite of --keep)
+              --before YYYY-MM-DD    Delete snapshots older than the date (local midnight)
+                                     (also accepts full ISO-8601; interpreted as UTC)
+              --match GLOB           Delete snapshots whose id matches the glob (supports * and ?).
+                                     Repeatable; you can pass comma-separated patterns too.
+
+            Options:
+              --dry-run | --dry      Preview only; do not delete or GC
+              --no-gc                Skip CAS garbage collection (GC). Default: run GC.
+                                     warn: --no-gc is deprecated and will be removed in the next release. 
+            
+              --space <space>        Explicit space; if omitted, use '.rinne/snapshots/current'
+
+            Notes:
+              - Exactly one selector must be specified.
+              - Selectors cannot be combined.
+            """;
+
+    private readonly RinnePaths _paths = new(Environment.CurrentDirectory);
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "tidy";
-
-        private readonly ITidyService _service;
-
-        public TidyCommand(ITidyService service)
-            => _service = service ?? throw new ArgumentNullException(nameof(service));
-
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: > 0 } && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+        if (args.Length < 1)
         {
-            // help（-h / --help のみ）
-            if (args.Length >= 2 && (args[1] is "-h" or "--help"))
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        string? spaceArg = null;
+
+        int? keep = null;
+        int? latest = null;
+        DateTimeOffset? before = null;
+        var matchGlobs = new List<string>();
+
+        bool dryRun = false;
+        bool runGc = true;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var a = args[i];
+
+            if (!a.StartsWith("--", StringComparison.Ordinal))
             {
-                PrintHelp();
-                return 0;
+                if (spaceArg is null) { spaceArg = a; continue; }
+                Console.Error.WriteLine($"unknown argument: {a}");
+                Console.WriteLine(Usage);
+                return 2;
             }
 
-            if (args.Length <= 1)
+            switch (a)
             {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 引数が不足しています。");
-                PrintHelp();
-                return 1;
-            }
+                case "--space":
+                    spaceArg = CliArgs.NeedValue(args, ref i, "--space");
+                    break;
 
-            try
-            {
-                var after = args.Skip(1).ToArray();
+                case "--keep":
+                    keep = CliArgs.ParseNonNegativeInt(CliArgs.NeedValue(args, ref i, "--keep"), "--keep");
+                    break;
 
-                bool all = false;
-                string? space = null;
-                int keep;
+                case "--latest":
+                case "--newest":
+                    latest = CliArgs.ParseNonNegativeInt(CliArgs.NeedValue(args, ref i, a), a);
+                    break;
 
-                // 受理する構文:
-                //   tidy [space] <keepCount>
-                //   tidy --all <keepCount>
-                //   tidy -h | --help
-                if (after[0].Equals("--all", StringComparison.OrdinalIgnoreCase))
-                {
-                    all = true;
-
-                    // 形式: --all <keepCount>（ちょうど2引数）
-                    if (after.Length != 2)
+                case "--before":
                     {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。usage: {CommandName} --all <keepCount>");
-                        return 1;
+                        var s = CliArgs.NeedValue(args, ref i, "--before");
+                        if (DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto))
+                            before = dto.ToUniversalTime();
+                        else if (DateTime.TryParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                            before = DateUtil.ParseLocalDateAsUtcMidnight(s);
+                        else
+                            throw new FormatException($"Invalid --before value: {s}");
+                        break;
                     }
-                    if (!TryParseKeep(after[1], out keep))
+
+                case "--match":
                     {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: <keepCount> は 1 以上の整数で指定してください。");
-                        return 1;
+                        var v = CliArgs.NeedValue(args, ref i, "--match");
+                        var parts = v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        matchGlobs.AddRange(parts);
+                        break;
+                    }
+
+                case "--dry-run":
+                case "--dry":
+                    dryRun = true;
+                    break;
+
+                case "--no-gc":
+                    runGc = false;
+                    break;
+
+                default:
+                    Console.Error.WriteLine($"unknown option: {a}");
+                    Console.WriteLine(Usage);
+                    return 2;
+            }
+        }
+
+        var selectorCount = 0;
+        if (keep is not null) selectorCount++;
+        if (latest is not null) selectorCount++;
+        if (before is not null) selectorCount++;
+        if (matchGlobs.Count > 0) selectorCount++;
+
+        if (selectorCount == 0)
+        {
+            Console.Error.WriteLine("one of --keep, --latest/--newest, --before, or --match is required.");
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        if (selectorCount > 1)
+        {
+            Console.Error.WriteLine("exactly one of --keep, --latest/--newest, --before, or --match can be specified.");
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        var spaceSvc = new SpaceService(_paths);
+        string space;
+        try
+        {
+            space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+
+        var service = new TidyService(_paths);
+        var opt = new TidyService.Options(
+            Space: space,
+            Keep: keep,
+            Latest: latest,
+            Before: before,
+            RunGc: runGc,
+            DryRun: dryRun,
+            MatchGlobs: matchGlobs.Count > 0 ? matchGlobs : null
+        );
+
+        try
+        {
+            var r = await service.RunAsync(opt, ct);
+
+            if (dryRun)
+            {
+                Console.WriteLine("[dry-run] Tidy preview");
+                Console.WriteLine($"  space      : {space}");
+                Console.WriteLine($"  targets    : {r.TargetIds.Count} snapshot(s)");
+                if (r.TargetIds.Count > 0)
+                {
+                    foreach (var id in r.TargetIds.Take(50))
+                        Console.WriteLine($"    - {id}");
+                    if (r.TargetIds.Count > 50)
+                        Console.WriteLine($"    ... (+{r.TargetIds.Count - 50} more)");
+                }
+
+                if (runGc)
+                {
+                    Console.WriteLine("  GC (preview):");
+                    Console.WriteLine($"    examined : {r.GcExamined}");
+                    Console.WriteLine($"    deletable: {r.GcDeletable}");
+                    Console.WriteLine($"    bytes    : {r.GcBytesFreed}");
+                    if (r.GcCandidates is { Count: > 0 })
+                    {
+                        foreach (var c in r.GcCandidates.Take(30))
+                            Console.WriteLine($"      - {c}");
+                        if (r.GcCandidates.Count > 30)
+                            Console.WriteLine($"      ... (+{r.GcCandidates.Count - 30} more)");
                     }
                 }
                 else
                 {
-                    // 形式は 1) <keepCount> または 2) <space> <keepCount>
-                    if (after.Length == 1)
-                    {
-                        // tidy N
-                        if (IsUnknownOption(after[0]))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{after[0]}'");
-                            return 1;
-                        }
-                        if (!TryParseKeep(after[0], out keep))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: <keepCount> は 1 以上の整数で指定してください。");
-                            return 1;
-                        }
-                    }
-                    else if (after.Length == 2)
-                    {
-                        // tidy <space> N
-                        if (IsUnknownOption(after[0]))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{after[0]}'");
-                            return 1;
-                        }
-                        space = after[0];
-                        if (!TryParseKeep(after[1], out keep))
-                        {
-                            Console.Error.WriteLine($"[{CommandName}] 失敗: <keepCount> は 1 以上の整数で指定してください。");
-                            return 1;
-                        }
-                    }
-                    else
-                    {
-                        // 余分な引数はエラー
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: 余分な引数があります: '{string.Join(' ', after.Skip(2))}'");
-                        return 1;
-                    }
+                    Console.WriteLine("  GC         : skipped (--no-gc)");
                 }
-
-                var options = new TidyOptions(
-                    AllSpaces: all,
-                    Space: space,
-                    KeepCount: keep
-                );
-
-                var root = Environment.CurrentDirectory;
-                return await _service.RunAsync(root, options, cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            else
             {
-                Console.Error.WriteLine($"[{CommandName}] canceled.");
-                return 130; // Ctrl+C 相当
+                Console.WriteLine("Tidy done.");
+                Console.WriteLine($"  space          : {space}");
+                Console.WriteLine($"  snapshots del  : {r.SnapshotDirsDeleted}");
+                Console.WriteLine($"  manifests  del : {r.ManifestsDeleted}");
+                if (runGc)
+                {
+                    Console.WriteLine("  GC:");
+                    Console.WriteLine($"    examined : {r.GcExamined}");
+                    Console.WriteLine($"    deleted  : {r.GcDeletable}");
+                    Console.WriteLine($"    bytes    : {r.GcBytesFreed}");
+                }
+                else
+                {
+                    Console.WriteLine("  GC         : skipped (--no-gc)");
+                }
             }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[{CommandName}] error: {ex.Message}");
-                return 2;
-            }
+
+            return 0;
         }
-
-        /// <inheritdoc/>
-        public void PrintHelp()
+        catch (Exception ex)
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName} [space] <keepCount>
-                  rinne {CommandName} --all <keepCount>
-                  rinne {CommandName} -h | --help
-
-                description:
-                  - 指定 space（省略時は current）または全 space の最新 <keepCount> 件を残して古い履歴を削除し、
-                    残存 meta のチェーンハッシュ（prev/this）を再計算して整えます。
-                  - ID / ZIP 名は変更しません（外部参照を壊しません）。
-                  - 実行前に log-output は一旦 off にしてください。
-
-                examples:
-                  rinne {CommandName} 20
-                  rinne {CommandName} work 30
-                  rinne {CommandName} --all 50
-                """);
-        }
-
-        /// <summary>keepカウントの解析（1以上の整数）。</summary>
-        private static bool TryParseKeep(string s, out int keep)
-            => int.TryParse(s, out keep) && keep > 0;
-
-        /// <summary>未知オプション検出（- で始まり、許可済み以外）。</summary>
-        private static bool IsUnknownOption(string token)
-        {
-            if (!token.StartsWith('-')) return false;
-            // 許可済み: --all, -h, --help
-            return !(token.Equals("--all", StringComparison.OrdinalIgnoreCase)
-                     || token.Equals("-h", StringComparison.OrdinalIgnoreCase)
-                     || token.Equals("--help", StringComparison.OrdinalIgnoreCase));
+            Console.Error.WriteLine($"tidy failed: {ex.Message}");
+            return 1;
         }
     }
 }

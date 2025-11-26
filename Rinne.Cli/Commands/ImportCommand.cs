@@ -1,177 +1,188 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Import;
+using Rinne.Core.Features.Meta;
+using Rinne.Core.Features.Notes;
+using Rinne.Core.Features.Space;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class ImportCommand : ICliCommand
 {
-    /// <summary>
-    /// 他リポジトリの space を取り込む CLI コマンド。
-    /// </summary>
-    public sealed class ImportCommand : ICliCommand
+    public string Name => "import";
+    public IEnumerable<string> Aliases => new[] { "imp" };
+    public string Summary => $"Import an external directory as a single full snapshot; then write meta.json and ensure <id>/{NoteService.DefaultFileName} (write text if -m).";
+    public string Usage => """
+        Usage:
+          rinne import <source-directory> [--space <space>] [--dry-run] [-m <text>]
+
+        Description:
+          - Imports <source-directory> as ONE full snapshot into THIS repository (payload only).
+          - Destination space defaults to the current space (see `rinne space current`).
+          - Any '.rinne' under <source-directory> is ignored.
+          - A new snapshot ID is generated from current UTC + UUIDv7.
+          - This command ALWAYS creates '<id>/note.md'.
+          - If -m is given, '<id>/note.md' is written (use 'rinne note' later to overwrite).
+        """;
+
+    private readonly RinnePaths _paths = new(Environment.CurrentDirectory);
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        private const string CommandName = "import";
-
-        private readonly ISpaceImportService _importService;
-
-        public ImportCommand(ISpaceImportService importService)
+        if (args.Length == 0)
         {
-            _importService = importService ?? throw new ArgumentNullException(nameof(importService));
+            Console.Error.WriteLine("invalid arguments.");
+            Console.WriteLine(Usage);
+            return 2;
         }
 
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args.Length > 0 && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
+        string? sourceDirArg = null;
+        string? spaceArg = null;
+        bool dryRun = false;
+        string? messageText = null;
 
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+        for (int i = 0; i < args.Length; i++)
         {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
+            ct.ThrowIfCancellationRequested();
+            var a = args[i];
+
+            if (a == "--space")
             {
-                PrintHelp();
-                return 0;
-            }
-
-            // 受理形: import <sourceRinneRoot> <space> [--mode fail|rename|clean]
-            if (args.Length < 3)
-            {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 引数が不足しています。");
-                PrintHelp();
-                return 2; // 入力エラー
-            }
-
-            // 未知オプションの早期検出（位置引数2つの後ろは --mode のみ許可）
-            if (args.Length > 3 && !args[3].StartsWith("--", StringComparison.Ordinal))
-            {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 余分な引数 '{args[3]}'");
-                PrintHelp();
-                return 2;
-            }
-
-            var sourceRoot = args[1].Trim();
-            var sourceSpace = args[2].Trim();
-
-            // 位置引数にオプション風トークンが来たらエラー
-            if (IsOptionLike(sourceRoot) || IsOptionLike(sourceSpace))
-            {
-                var bad = IsOptionLike(sourceRoot) ? sourceRoot : sourceSpace;
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{bad}'");
-                return 2;
-            }
-
-            var mode = SpaceImportConflictMode.Fail; // 既定: fail
-            bool seenMode = false;
-
-            // オプション解析
-            for (int i = 3; i < args.Length; i++)
-            {
-                var a = args[i];
-
-                if (a.Equals("-h", StringComparison.OrdinalIgnoreCase) || a.Equals("--help", StringComparison.OrdinalIgnoreCase))
+                if (i + 1 >= args.Length)
                 {
-                    Console.Error.WriteLine($"[{CommandName}] 失敗: -h/--help は単独で使用してください。");
+                    Console.Error.WriteLine("option '--space' requires a value.");
                     return 2;
                 }
-
-                if (a.StartsWith("--mode=", StringComparison.OrdinalIgnoreCase))
+                spaceArg = args[++i];
+            }
+            else if (a == "--dry-run")
+            {
+                dryRun = true;
+            }
+            else if (a == "-m" || a == "--message")
+            {
+                if (i + 1 >= args.Length)
                 {
-                    if (seenMode) { Console.Error.WriteLine($"[{CommandName}] 失敗: --mode が重複しています。"); return 2; }
-                    var val = a.Substring("--mode=".Length).Trim().ToLowerInvariant();
-                    if (!TryParseMode(val, out mode))
-                    {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: --mode の値が不正です: '{val}'（fail|rename|clean）");
-                        return 2;
-                    }
-                    seenMode = true;
-                    continue;
+                    Console.Error.WriteLine("option '--message' requires a value.");
+                    return 2;
                 }
-
-                if (a.Equals("--mode", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (seenMode) { Console.Error.WriteLine($"[{CommandName}] 失敗: --mode が重複しています。"); return 2; }
-                    if (i + 1 >= args.Length || args[i + 1].StartsWith("-", StringComparison.Ordinal))
-                    {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: --mode に値が指定されていません。");
-                        return 2;
-                    }
-                    var val = args[++i].Trim().ToLowerInvariant();
-                    if (!TryParseMode(val, out mode))
-                    {
-                        Console.Error.WriteLine($"[{CommandName}] 失敗: --mode の値が不正です: '{val}'（fail|rename|clean）");
-                        return 2;
-                    }
-                    seenMode = true;
-                    continue;
-                }
-
-                // ここまでに該当しなければ未知オプション
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{a}'");
+                messageText = args[++i];
+            }
+            else if (IsOption(a))
+            {
+                Console.Error.WriteLine($"unknown option: {a}");
                 return 2;
             }
+            else
+            {
+                if (sourceDirArg is not null)
+                {
+                    Console.Error.WriteLine("multiple source directories specified.");
+                    return 2;
+                }
+                sourceDirArg = a;
+            }
+        }
 
+        if (sourceDirArg is null)
+        {
+            Console.Error.WriteLine("missing <source-directory>.");
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        if (!Directory.Exists(_paths.RinneRoot))
+        {
+            Console.Error.WriteLine($".rinne not found under: {_paths.SourceRoot}");
+            return 2;
+        }
+
+        var spaceSvc = new SpaceService(_paths);
+        var space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+
+        if (!SpaceNameRules.NameRegex.IsMatch(space))
+        {
+            Console.Error.WriteLine($"invalid space name. Use {SpaceNameRules.HumanReadable}");
+            return 2;
+        }
+
+        var fullSourceDir = Path.GetFullPath(sourceDirArg);
+
+        var svc = new ImportService(_paths);
+        var opt = new ImportService.Options(
+            SourceDirectory: fullSourceDir,
+            DestSpace: space,
+            DryRun: dryRun
+        );
+        var res = await svc.RunAsync(opt, ct);
+
+        if (!res.Imported || res.Error is not null)
+        {
+            Console.Error.WriteLine($"import failed: {res.Error}");
+            return 1;
+        }
+
+        if (dryRun)
+        {
+            Console.WriteLine("dry-run: import would create the following snapshot:");
+            Console.WriteLine($"  source   : {fullSourceDir}");
+            Console.WriteLine($"  dest     : {_paths.SourceRoot}");
+            Console.WriteLine($"  space    : {res.DestSpace}");
+            Console.WriteLine($"  snapshot : {res.SnapshotId ?? "(none)"}");
+            Console.WriteLine($"  created  : {res.CreatedUtc:O}");
+            return 0;
+        }
+
+        var finalSnapDir = _paths.Snapshot(space, res.SnapshotId!);
+
+        try
+        {
+            var metaService = new MetaService();
+            var meta = metaService.WriteMeta(finalSnapDir, ct);
+            Console.WriteLine($"Meta: v={meta.Version}, hash={meta.SnapshotHash}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"failed to write meta.json: {ex.Message}");
+            return 4;
+        }
+
+        var noteService = new NoteService();
+
+        var created = noteService.Ensure(finalSnapDir, NoteService.DefaultFileName, ensureUtf8Bom: true);
+
+        if (!string.IsNullOrEmpty(messageText))
+        {
             try
             {
-                var layout = new RepositoryLayout(Directory.GetCurrentDirectory());
-
-                if (!Directory.Exists(layout.RinneDir))
-                    throw new InvalidOperationException("先に init コマンドで初期化してください。(.rinne が見つかりません)");
-
-                var request = new SpaceImportRequest
-                {
-                    SourceRoot = sourceRoot,
-                    SourceSpace = sourceSpace,
-                    OnConflict = mode
-                };
-
-                var result = await _importService.ImportAsync(layout, request, cancellationToken).ConfigureAwait(false);
-
-                Console.WriteLine(result.ToHumanReadable());
-                return result.ExitCode; // サービス側の終了コードポリシーに委譲
-            }
-            catch (OperationCanceledException)
-            {
-                Console.Error.WriteLine($"[{CommandName}] canceled.");
-                return 130;
+                noteService.Write(finalSnapDir, new NoteService.WriteOptions(
+                    Text: messageText,
+                    FileName: NoteService.DefaultFileName,
+                    Overwrite: true,
+                    EnsureUtf8Bom: true,
+                    UseCrLf: true
+                ), ct);
+                Console.WriteLine("Note: written to note.md");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: {ex.Message}");
-                return 2; // 入力/処理エラー
+                Console.Error.WriteLine($"failed to write note.md: {ex.Message}");
+                return 5;
             }
         }
-
-        /// <inheritdoc/>
-        public void PrintHelp()
+        else
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName} <source_root> <space> [--mode fail|rename|clean]
-                  rinne {CommandName} -h | --help
-
-                description:
-                  他の .rinne から指定 space を取り込み、現在のリポジトリにコピーします。
-                  <source_root>   　　取り込み元のルートディレクトリ。ルートディレクトリ直下に.rinneが配置されます。
-                  <space>             取り込み対象の space 名。
-                  --mode              衝突時の動作（既定: fail）
-                                      - fail   既存があれば中止
-                                      - rename 別名でコピー
-                                      - clean  既存を削除して上書き
-                """);
+            Console.WriteLine(created ? "Note: created empty note.md" : "Note: note.md already exists");
         }
 
-        private static bool TryParseMode(string val, out SpaceImportConflictMode mode)
-        {
-            switch (val)
-            {
-                case "fail": mode = SpaceImportConflictMode.Fail; return true;
-                case "rename": mode = SpaceImportConflictMode.Rename; return true;
-                case "clean": mode = SpaceImportConflictMode.Clean; return true;
-                default: mode = SpaceImportConflictMode.Fail; return false;
-            }
-        }
-
-        private static bool IsOptionLike(string token)
-            => token.StartsWith("-", StringComparison.Ordinal); // - で始まるならオプション風
+        Console.WriteLine("import ok");
+        Console.WriteLine($"  source   : {fullSourceDir}");
+        Console.WriteLine($"  dest     : {_paths.SourceRoot}");
+        Console.WriteLine($"  space    : {res.DestSpace}");
+        Console.WriteLine($"  snapshot : {res.SnapshotId}");
+        Console.WriteLine($"  created  : {res.CreatedUtc:O}");
+        return 0;
     }
+
+    private static bool IsOption(string s) => s.StartsWith("-", StringComparison.Ordinal);
 }

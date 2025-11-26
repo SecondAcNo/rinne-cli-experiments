@@ -1,117 +1,198 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Models;
+﻿using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Restore;
+using Rinne.Core.Features.Space;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class RestoreCommand : ICliCommand
 {
-    /// <summary>
-    /// スナップショット（ZIP）をワーキングツリーへ復元する最小コマンド。
-    /// </summary>
-    public sealed class RestoreCommand : ICliCommand
+    public string Name => "restore";
+    public IEnumerable<string> Aliases => Array.Empty<string>();
+    public string Summary => "Restore working tree from a full snapshot (<id>/snapshots).";
+
+    public string Usage => """
+            Usage:
+              rinne restore [<space>] [selectors...] [options...]
+              rinne restore --space <space> [selectors...] [options...]
+
+            Selectors (choose one; default = latest):
+              --id <prefix>         Unique snapshot id prefix (wins over others)
+              --back N              N back from latest (0=latest)
+              --offset N            Alias of --back
+
+            Options:
+              --to <dir>            Destination root (default: current directory)
+              --purge               Clean replace (remove everything except .rinne, then restore)
+              --hydrate             If payload missing, hydrate persistently (<id>/snapshots is created)
+              --hydrate=ephemeral   If payload missing, hydrate temporarily (no <id>/snapshots)
+              --hydrate=tmp         Alias of --hydrate=ephemeral
+
+            Notes:
+              - If neither <space> nor --space is given, the command reads the current space from:
+                  .rinne/snapshots/current  (single-line text)
+              - Default restore mode is a non-destructive merge (extra files are kept). Use --purge for full clean replace.
+            """;
+
+    private readonly RinnePaths _paths = new(Environment.CurrentDirectory);
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "restore";
+        string? spaceArg = null;
 
-        /// <summary>復元処理サービス。</summary>
-        private readonly IRestoreService _restoreService;
+        string? idPrefix = null;
+        int? back = null;
 
-        public RestoreCommand(IRestoreService restoreService)
+        string? dest = null;
+        bool purge = false;
+        bool autoHydrate = false;
+        bool ephemeralHydrate = false;
+
+        for (int i = 0; i < args.Length; i++)
         {
-            _restoreService = restoreService ?? throw new ArgumentNullException(nameof(restoreService));
+            ct.ThrowIfCancellationRequested();
+            var a = args[i];
+
+            if (!a.StartsWith("--", StringComparison.Ordinal))
+            {
+                if (spaceArg is null) { spaceArg = a; continue; }
+                Console.Error.WriteLine($"unknown argument: {a}");
+                Console.WriteLine(Usage);
+                return 2;
+            }
+
+            switch (a)
+            {
+                case "--space":
+                    spaceArg = CliArgs.NeedValue(args, ref i, "--space");
+                    break;
+
+                case "--id":
+                    idPrefix = CliArgs.NeedValue(args, ref i, "--id");
+                    break;
+
+                case "--back":
+                    back = CliArgs.ParseNonNegativeInt(CliArgs.NeedValue(args, ref i, "--back"), "--back");
+                    break;
+
+                case "--offset":
+                    back = CliArgs.ParseNonNegativeInt(CliArgs.NeedValue(args, ref i, "--offset"), "--offset");
+                    break;
+
+                case "--to":
+                case "--dest":
+                    dest = CliArgs.NeedValue(args, ref i, a);
+                    break;
+
+                case "--purge":
+                    purge = true;
+                    break;
+
+                case "--hydrate":
+                    if (a.Contains('='))
+                    {
+                        var mode = a[(a.IndexOf('=') + 1)..].Trim();
+                        if (mode.Equals("ephemeral", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("tmp", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ephemeralHydrate = true;
+                            autoHydrate = false;
+                        }
+                        else if (mode.Equals("persist", StringComparison.OrdinalIgnoreCase) ||
+                                 mode.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                                 mode.Length == 0)
+                        {
+                            autoHydrate = true;
+                            ephemeralHydrate = false;
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine("invalid --hydrate value. use: --hydrate, or --hydrate=ephemeral|tmp");
+                            return 2;
+                        }
+                    }
+                    else
+                    {
+                        autoHydrate = true;
+                        ephemeralHydrate = false;
+                    }
+                    break;
+
+                default:
+                    if (a.StartsWith("--hydrate=", StringComparison.Ordinal))
+                    {
+                        var mode = a["--hydrate=".Length..].Trim();
+                        if (mode.Equals("ephemeral", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("tmp", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ephemeralHydrate = true;
+                            autoHydrate = false;
+                            break;
+                        }
+                        if (mode.Equals("persist", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                            mode.Length == 0)
+                        {
+                            autoHydrate = true;
+                            ephemeralHydrate = false;
+                            break;
+                        }
+                        Console.Error.WriteLine("invalid --hydrate value. use: --hydrate, or --hydrate=ephemeral|tmp");
+                        return 2;
+                    }
+
+                    Console.Error.WriteLine($"unknown option: {a}");
+                    Console.WriteLine(Usage);
+                    return 2;
+            }
         }
 
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: > 0 } && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+        if (!string.IsNullOrWhiteSpace(idPrefix) && back is not null)
         {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
-            {
-                PrintHelp();
-                return 0;
-            }
-
-            try
-            {
-                // 厳格パース：restore <space> <id> 以外はエラー
-                if (args.Length != 3)
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: 構文は 'rinne {CommandName} <space> <id>' です。");
-                    PrintHelp();
-                    return 2;
-                }
-
-                var spaceTok = args[1].Trim();
-                var idTok = args[2].Trim();
-
-                // 未知オプション（-で始まるトークン）はエラー
-                if (IsOptionLike(spaceTok) || IsOptionLike(idTok))
-                {
-                    var bad = IsOptionLike(spaceTok) ? spaceTok : idTok;
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: 不明なオプション '{bad}'");
-                    return 2;
-                }
-
-                if (string.IsNullOrWhiteSpace(spaceTok) || string.IsNullOrWhiteSpace(idTok))
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: space と id は必須です。");
-                    return 2;
-                }
-
-                // 実行
-                var root = Directory.GetCurrentDirectory();
-                var layout = new RepositoryLayout(root);
-
-                if (!Directory.Exists(layout.RinneDir))
-                {
-                    Console.Error.WriteLine($"[{CommandName}] 入力エラー: .rinne が見つかりません。先に 'rinne init' を実行してください。");
-                    return 2;
-                }
-
-                await _restoreService.RestoreAsync(root, spaceTok, idTok, cancellationToken).ConfigureAwait(false);
-
-                Console.WriteLine($"[ok] restored {spaceTok}:{idTok} → {root}");
-                return 0;
-            }
-            catch (OperationCanceledException)
-            {
-                Console.Error.WriteLine($"[{CommandName}] 中断されました。");
-                return 130; // SIGINT 相当
-            }
-            catch (FileNotFoundException ex)
-            {
-                Console.Error.WriteLine($"[{CommandName}] スナップショットが見つかりません: {ex.FileName ?? "(unknown)"}");
-                return 3;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[{CommandName}] 失敗: {ex.Message}");
-                return 1;
-            }
+            Console.Error.WriteLine("use either --id or --back/--offset (not both).");
+            return 2;
         }
 
-        /// <inheritdoc/>
-        public void PrintHelp()
+        if (string.IsNullOrWhiteSpace(idPrefix) && back is null)
+            back = 0;
+
+        var spaceSvc = new SpaceService(_paths);
+        string space;
+        try
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName} <space> <id>
-                  rinne {CommandName} -h | --help
-
-                description:
-                  指定スナップショット (.rinne/data/<space>/<id>.zip) を現在のプロジェクトに復元します。
-                  復元前のクリーン処理や .rinneignore の適用はサービス側で行われます。
-
-                examples:
-                  rinne {CommandName} main 00000042_20251024T091530123
-                  rinne {CommandName} work 00000011_20251027T154200987
-                """);
+            space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
         }
 
-        private static bool IsOptionLike(string token)
-            => token.StartsWith("-", StringComparison.Ordinal); // -h, --foo などを弾く
+        var service = new RestoreService(_paths);
+        var opt = new RestoreService.Options(
+            Space: space,
+            IdPrefix: idPrefix,
+            NthFromNewest: back,
+            Destination: dest,
+            AutoHydrate: autoHydrate,
+            EphemeralHydrate: ephemeralHydrate,
+            PurgeAll: purge
+        );
+
+        var result = await service.RunAsync(opt, ct);
+
+        if (result.Restored)
+        {
+            Console.WriteLine($"restore ok: {result.SnapshotId}");
+            Console.WriteLine($"  dest : {result.Destination}");
+            if (!string.IsNullOrEmpty(result.SourcePayload))
+                Console.WriteLine($"  source: {result.SourcePayload}");
+            return 0;
+        }
+        else
+        {
+            Console.Error.WriteLine($"restore failed: {result.Error}");
+            return 1;
+        }
     }
 }

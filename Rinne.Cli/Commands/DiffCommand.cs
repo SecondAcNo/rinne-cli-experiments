@@ -1,126 +1,178 @@
-﻿using Rinne.Cli.Interfaces.Commands;
-using Rinne.Cli.Interfaces.Services;
-using Rinne.Cli.Interfaces.Utility;
+﻿using System.Globalization;
+using Rinne.Cli.Commands.Interfaces;
+using Rinne.Core.Common;
+using Rinne.Core.Features.Diff;
+using Rinne.Core.Features.Space;
 
-namespace Rinne.Cli.Commands
+namespace Rinne.Cli.Commands;
+
+public sealed class DiffCommand : ICliCommand
 {
-    /// <summary>
-    /// 2つのRinneアーカイブ（ZIP）の内容差分を表示するコマンド。
-    /// </summary>
-    public sealed class DiffCommand : ICliCommand
+    public string Name => "diff";
+    public IEnumerable<string> Aliases => Array.Empty<string>();
+    public string Summary => "Compare two snapshots by @N selectors in the current or specified space.";
+    public string Usage => """
+        Usage:
+          rinne diff [--space <space>] <@A> <@B>
+
+        Options:
+          --space <space>   Explicit space; if omitted, use the current space.
+
+        Notes:
+          - DEPRECATED: this command will be removed in a future version.
+          - @0 is the latest snapshot, @1 is one before, and so on.
+        """;
+
+    private readonly RinnePaths _paths = new(Environment.CurrentDirectory);
+
+    public async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
-        /// <summary>コマンド名。</summary>
-        public const string CommandName = "diff";
+        Console.Error.WriteLine("warning: 'rinne diff' is DEPRECATED and will be removed in the next version.");
 
-        private readonly IArchiveDiffService _service;
-        private readonly IConsoleDiffFormatter _formatter;
+        string? spaceArg = null;
+        var pos = new List<string>();
 
-        public DiffCommand(IArchiveDiffService service, IConsoleDiffFormatter formatter)
+        for (int i = 0; i < args.Length; i++)
         {
-            _service = service ?? throw new ArgumentNullException(nameof(service));
-            _formatter = formatter ?? throw new ArgumentNullException(nameof(formatter));
-        }
+            ct.ThrowIfCancellationRequested();
+            var a = args[i].Trim();
 
-        /// <inheritdoc/>
-        public bool CanHandle(string[] args)
-            => args is { Length: >= 1 } &&
-               string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
-
-        /// <inheritdoc/>
-        /// <returns>0=差分なし、1=差分あり、2=入力/処理エラー、130=キャンセル</returns>
-        public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
-        {
-            // help（-h / --help のみ。混在不可）
-            if (args.Length == 2 && (args[1] is "-h" or "--help"))
+            if (!a.StartsWith("--", StringComparison.Ordinal))
             {
-                PrintHelp();
-                return 0;
+                pos.Add(a);
+                continue;
             }
 
-            // 受理形は: 1) diff  2) diff <id1> <id2> [space]
-            if (args.Length is 2 or > 4)
+            switch (a)
             {
-                // args.Length == 2 は「位置引数が1個だけ」の中途半端ケース
-                Console.Error.WriteLine($"[{CommandName}] 失敗: 構文が不正です。");
-                PrintHelp();
-                return 2;
-            }
+                case "--space":
+                    if (spaceArg is not null)
+                    {
+                        Console.Error.WriteLine("--space specified more than once.");
+                        Console.WriteLine(Usage);
+                        return 2;
+                    }
+                    if (i + 1 >= args.Length)
+                    {
+                        Console.Error.WriteLine("missing value for --space");
+                        Console.WriteLine(Usage);
+                        return 2;
+                    }
+                    spaceArg = args[++i].Trim();
+                    break;
 
-            string? id1 = null, id2 = null, space = null;
-
-            if (args.Length >= 3)
-            {
-                // 未知オプション防止（id/space に '-' 始まりは禁止）
-                if (args[1].StartsWith("-", StringComparison.Ordinal) ||
-                    args[2].StartsWith("-", StringComparison.Ordinal) ||
-                    (args.Length == 4 && args[3].StartsWith("-", StringComparison.Ordinal)))
-                {
-                    var bad = args.Skip(1).First(a => a.StartsWith("-", StringComparison.Ordinal));
-                    Console.Error.WriteLine($"[{CommandName}] 失敗: 不明なオプション '{bad}'");
+                default:
+                    Console.Error.WriteLine($"unknown option: {a}");
+                    Console.WriteLine(Usage);
                     return 2;
-                }
-
-                id1 = args[1];
-                id2 = args[2];
-                if (args.Length == 4) space = args[3];
-            }
-            // else: 引数なし → 自動選択
-
-            try
-            {
-                var outcome = await _service.DiffAsync(
-                    repoRoot: Directory.GetCurrentDirectory(),
-                    id1: id1,
-                    id2: id2,
-                    space: space,
-                    cancellationToken).ConfigureAwait(false);
-
-                // 自動選択時の案内
-                if (id1 is null && id2 is null)
-                {
-                    Console.WriteLine($"[info] Auto-selected latest pair in space='{outcome.Space}':");
-                    Console.WriteLine($"       id1={outcome.Id1}.zip  (older)");
-                    Console.WriteLine($"       id2={outcome.Id2}.zip  (newer)");
-                }
-
-                _formatter.Print(outcome);
-
-                var hasDiff = outcome.Result.Added.Count
-                            + outcome.Result.Removed.Count
-                            + outcome.Result.Modified.Count > 0;
-
-                return hasDiff ? 1 : 0;
-            }
-            catch (OperationCanceledException)
-            {
-                Console.Error.WriteLine("[warn] Canceled.");
-                return 130;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[error] {ex.Message}");
-                return 2;
             }
         }
 
-        /// <inheritdoc/>
-        public void PrintHelp()
+        if (pos.Count != 2)
         {
-            Console.WriteLine($"""
-                usage:
-                  rinne {CommandName}
-                  rinne {CommandName} <id1> <id2> [space]
-                  rinne {CommandName} -h | --help
-
-                description:
-                  指定された space（または current）の ZIP スナップショット差分を表示します。
-                  引数なしの場合は、最新と直前のペアを自動選択して比較します。
-
-                examples:
-                  rinne {CommandName}
-                  rinne {CommandName} 00000001_20251026T090000 00000002_20251026T093000 main
-                  rinne {CommandName} 00000003_20251026T100000 00000004_20251026T101000
-                """);
+            Console.Error.WriteLine("two @N selectors are required.");
+            Console.WriteLine(Usage);
+            return 2;
         }
+
+        var selA = pos[0];
+        var selB = pos[1];
+        if (!selA.StartsWith("@") || !selB.StartsWith("@"))
+        {
+            Console.Error.WriteLine("both arguments must be @N selectors (e.g., @1 @0).");
+            Console.WriteLine(Usage);
+            return 2;
+        }
+
+        string space;
+        try
+        {
+            var spaceSvc = new SpaceService(_paths);
+            space = spaceArg ?? spaceSvc.GetCurrentSpaceFromPointer();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+
+        string idA, idB;
+        try
+        {
+            idA = ResolveAtN(space, selA);
+            idB = ResolveAtN(space, selB);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+
+        var svc = new DiffService(_paths);
+        try
+        {
+            var res = await svc.DiffAsync(space, idA, idB, new DiffService.Options(UseContentHash: false), ct);
+
+            Console.WriteLine($"Diff [{space}]: {res.IdA} .. {res.IdB}");
+            foreach (var c in res.Changes)
+            {
+                ct.ThrowIfCancellationRequested();
+                switch (c.Kind)
+                {
+                    case DiffService.ChangeKind.Added:
+                        Console.WriteLine($"+ {c.PathB}");
+                        break;
+                    case DiffService.ChangeKind.Removed:
+                        Console.WriteLine($"- {c.PathA}");
+                        break;
+                    case DiffService.ChangeKind.Modified:
+                        Console.WriteLine($"M {c.PathA}");
+                        break;
+                    case DiffService.ChangeKind.Unchanged:
+                        Console.WriteLine($"= {c.PathA}");
+                        break;
+                }
+            }
+            Console.WriteLine($"Added: {res.Added}, Removed: {res.Removed}, Modified: {res.Modified}, Unchanged: {res.Unchanged}");
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("diff cancelled.");
+            return 130;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"diff failed: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static string ResolveAtN(string space, string selector)
+    {
+        if (!selector.StartsWith("@"))
+            throw new ArgumentException($"invalid selector: {selector}");
+
+        var s = selector.AsSpan(1);
+        if (!int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n < 0)
+            throw new ArgumentException($"invalid selector: {selector}");
+
+        var dir = Path.Combine(Environment.CurrentDirectory, ".rinne", "snapshots", "space", space);
+        if (!Directory.Exists(dir))
+            throw new DirectoryNotFoundException($"space not found: {space}");
+
+        var ids = Directory.GetDirectories(dir)
+            .Select(Path.GetFileName)
+            .Where(v => !string.IsNullOrEmpty(v))
+            .OrderBy(v => v, StringComparer.Ordinal)
+            .ToList();
+
+        if (ids.Count == 0)
+            throw new InvalidOperationException($"no snapshots under space: {space}");
+        if (n >= ids.Count)
+            throw new ArgumentOutOfRangeException(nameof(selector), $"@{n} is out of range (space has {ids.Count} snapshots).");
+
+        var index = ids.Count - 1 - n;
+        return ids[index]!;
     }
 }
