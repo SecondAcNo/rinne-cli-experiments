@@ -1168,6 +1168,8 @@ There is **no compatibility** between v0.9.0 and v0.9.1.
 - Further speed and stability improvements for save / verify / GC
 - Cross-platform validation and improvements (experimental)
 - GUI and other integrations as parallel experimental projects
+- In-memory RAG integration in GUI (experimental)
+- Automatic snapshot message generation on save (GUI, AI-assisted)
 - Future experimental commands such as `stillverse`, `spacewalk`, `phantom`, `rebirth`
 - Architecture clean-up and optimization (planned for v0.9.5 and beyond)
 
