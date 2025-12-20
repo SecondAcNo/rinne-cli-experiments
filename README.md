@@ -1165,13 +1165,94 @@ There is **no compatibility** between v0.9.0 and v0.9.1.
 
 ## 10. Roadmap
 
-- Further speed and stability improvements for save / verify / GC
+### 10.1 Performance & Stability
+    
+- Focus on C# performance optimization for v0.9.2.
+(A full migration to Rust was evaluated but postponed to prioritize immediate stability and ecosystem compatibility.)
+    
+
+### 10.2 Cross-Platform
+
 - Cross-platform validation and improvements (experimental)
-- GUI and other integrations as parallel experimental projects
-- In-memory RAG integration in GUI (experimental)
-- Automatic snapshot message generation on save (GUI, AI-assisted)
-- Future experimental commands such as `stillverse`, `spacewalk`, `phantom`, `rebirth`
-- Architecture clean-up and optimization (planned for v0.9.5 and beyond)
+    
+- **v0.9.2 progresses toward Linux support for CLI**
+    
+
+### 10.3 GUI & Integrations (Experimental)
+
+- GUI development using **Avalonia + C#**
+    
+    - Fallback to **Electron** is under consideration if critical issues arise
+        
+
+### 10.4 Frozen / On Hold
+
+- ~~In-memory RAG integration for the GUI (experimental)~~
+    
+- ~~Automatic snapshot message generation on save (GUI, AI-assisted)~~
+    
+- ~~Future experimental commands: `stillverse`, `spacewalk`, `phantom`, `rebirth`, etc.~~
+    
+- ~~Natural-language–driven command generation~~
+    
+
+**Reason**  
+These features are intentionally frozen pending wider NPU adoption.  
+At present, both local and cloud AI introduce clear UX and performance issues that outweigh their benefits.
+
+### 10.5 Architecture & Core Enhancements
+
+#### Target: v0.9.2
+
+- Symlink support
+    
+- Hardlink support
+    
+- Explicit handling for FIFO / pipelines / sockets (all skipped)
+    
+- Fail-fast handling for:
+    
+    - AccessDenied / Unauthorized
+        
+    - PathTooLong
+        
+    - Enumeration loss
+        
+- Rollback support on failure
+    
+- Improved handling of CAS corruption
+    
+- Enhanced GC functionality
+    
+- Exclusive lock support
+    
+- Direct restoration from CAS for Hydrate and Restore
+    
+- Configurable parallelism and compression levels
+    
+- Hash algorithm migration to BLAKE3
+    
+- Improved corruption tolerance for the cache database
+    
+- Stress testing for:
+    
+    - Projects with millions of files
+        
+    - Projects with hundreds of gigabytes of data
+        
+- Command system reorganization
+    
+- Progress reporting
+    
+- Migration to a custom license  
+    (may be moved to a separate page)
+    
+- Architectural redesign groundwork
+
+### Notes
+
+- Experimental features may change or be removed without notice  
+- Stability, correctness, and performance take priority over feature expansion
 
 ---
 
