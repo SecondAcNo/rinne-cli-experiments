@@ -1207,6 +1207,10 @@ At present, both local and cloud AI introduce clear UX and performance issues th
 - Symlink support
     
 - Hardlink support
+
+- Mount points are listed but not traversed (do not cross other filesystems, including bind mounts and Windows reparse points; retesting required)
+
+- Do not adopt inode/fileId-based identity (continue using path + size + mtime for now; retesting required)
     
 - Explicit handling for FIFO / pipelines / sockets (all skipped)
     
