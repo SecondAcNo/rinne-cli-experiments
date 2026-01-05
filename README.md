@@ -1212,6 +1212,10 @@ At present, both local and cloud AI introduce clear UX and performance issues th
 
 - Do not adopt inode/fileId-based identity (continue using path + size + mtime for now; retesting required)
     
+- We decided not to implement racy-timestamp heuristics, partial-content fingerprints, or OS-specific change tracking (USN/FSEvents/inotify).
+  These approaches provide only “partially safer” detection, while adding significant complexity, maintenance cost, and user confusion.
+  Instead, we intentionally keep the model simple: choose either speed or safety—no in-between mode.
+
 - Explicit handling for FIFO / pipelines / sockets (all skipped)
     
 - Fail-fast handling for:
