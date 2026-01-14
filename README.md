@@ -1168,6 +1168,7 @@ There is **no compatibility** between v0.9.0 and v0.9.1.
 ### 10.1 Performance & Stability
     
 - Focus on C# performance optimization for v0.9.2.
+    - Migration to .NET 10 (re-testing the Native AOT migration) 
 (A full migration to Rust was evaluated but postponed to prioritize immediate stability and ecosystem compatibility.)
     
 
@@ -1176,11 +1177,13 @@ There is **no compatibility** between v0.9.0 and v0.9.1.
 - Cross-platform validation and improvements (experimental)
     
 - **v0.9.2 progresses toward Linux support for CLI**
+    - Linux support is best-effort and not a complete, fully supported implementation. 
     
 
 ### 10.3 GUI & Integrations (Experimental)
 
 - GUI development using **Avalonia + C#**
+    - (Linux(ubuntu) and Windows implementations completed. )
     
     - Fallback to **Electron** is under consideration if critical issues arise
         
