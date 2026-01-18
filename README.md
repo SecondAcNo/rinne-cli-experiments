@@ -1168,7 +1168,9 @@ There is **no compatibility** between v0.9.0 and v0.9.1.
 ### 10.1 Performance & Stability
     
 - Focus on C# performance optimization for v0.9.2.
-    - Migration to .NET 10 (re-testing the Native AOT migration) 
+    - Migration to .NET 10 (re-testing the Native AOT migration : done.)
+    - Proceeding to LP creation.
+    - Proceeding to locale testing.
 (A full migration to Rust was evaluated but postponed to prioritize immediate stability and ecosystem compatibility.)
     
 
@@ -1232,6 +1234,7 @@ At present, both local and cloud AI introduce clear UX and performance issues th
 - Rollback support on failure
     
 - Improved handling of CAS corruption
+    - We chose not to support direct CAS reads via Linux FUSE or Windows ProjFS due to stability concerns.
     
 - Enhanced GC functionality
     
