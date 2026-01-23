@@ -1235,6 +1235,7 @@ At present, both local and cloud AI introduce clear UX and performance issues th
     
 - Improved handling of CAS corruption
     - We chose not to support direct CAS reads via Linux FUSE or Windows ProjFS due to stability concerns.
+    - Confirmed a bug when restoring a single huge file (100GB-class). We’re planning a major refactor to replace the existing code with a hybrid parallel-buffer + streaming strategy, followed by re-testing.
     
 - Enhanced GC functionality
     
