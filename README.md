@@ -1235,8 +1235,13 @@ At present, both local and cloud AI introduce clear UX and performance issues th
     
 - Improved handling of CAS corruption
     - We chose not to support direct CAS reads via Linux FUSE or Windows ProjFS due to stability concerns.
-    - Confirmed a bug when restoring a single huge file (100GB-class). We’re planning a major refactor to replace the existing code with a hybrid parallel-buffer + streaming strategy, followed by re-testing.
-    
+    - Confirmed a bug when restoring a single huge file (100GB-class). We’re planning a major refactor to replace the existing code with a hybrid parallel-buffer + streaming strategy, followed by re-testing.(done)
+    - Transitioned to long-run, stress, boundary, and error-handling testing with over 10 million files and 1TB-class data; however, some commands failed. We plan to identify the root cause and implement fixes.
+    - We have scrapped the plan to implement a two-layer deduplication system (file-level for code and chunk-level for binaries) in favor of unifying everything into chunk-level dedup.
+      While this increases the restoration cost for code, we concluded that the overhead is negligible on modern local PCs compared to massive binaries. We are prioritizing maintainability and storage efficiency instead.
+      Consequently, we are reverting the newly implemented coexistence of branch and space features, and completely removing the branching functionality. This ensures strict independence of each history and avoids any dilution of our core architectural philosophy.
+
+
 - Enhanced GC functionality
     
 - Exclusive lock support
