@@ -1270,6 +1270,39 @@ At present, both local and cloud AI introduce clear UX and performance issues th
     
 - Architectural redesign groundwork
 
+# Strategic Pivot: Rebuilding v0.9.2 from Scratch
+
+Sticking to a simple architecture has made $O(N)$ traversal unavoidable. As a result, performance hits a wall with massive projects. This design is a dead end; no matter how much I tune it, the UX will eventually become unbearable at a certain scale. The overhead of physical storage is also too heavy and bound to collapse. When I think about what a VCS should actually be, I realize my thinking was wrong. 
+
+> **It was a failure of my own judgment and a lack of foresight—the typical mistake of a fool who never learns until he fails.**
+
+It is an absolute nightmare to have to redo this, but the current state is unacceptable. I am rebuilding **v0.9.2** from scratch. I don’t want to fall into the trap of "infinite development" in pursuit of perfection, but I’ve concluded that staying the course is simply not an option.
+
+---
+
+### v0.9.2 Redesign Specifications
+**Target Release Date: April 1st**
+
+The project will be redesigned with the following core improvements:
+
+* **Database-backed Manifests**
+    * Adopting a Merkle DAG variant. Strictly append-only for changes and additions.
+* **Unified Storage (Logical Storage)**
+    * Removing "physical storage" entirely. Consolidating all history into chunk-level deduplication + zstd CAS.
+* **Command Cleanup & Workflow Integration**
+    * Deleting `hydrate`, `compact`, and `save --compact | --compact-full`.
+    * Adding `extract` and unifying the `save` command for a streamlined experience.
+* **Persistence & Flexibility**
+    * Maintaining history independence and the ability to delete history from any point.
+* **Performance Optimization**
+    * Significantly faster `diff` and `verify`.
+    * **Hashing:** Continuing with Blake3, but refactoring the target calculation algorithm to reduce algorithmic complexity.
+* **New Features**
+    * **Validate:** New content-only validation function.
+    * **Scoped Saves:** Targeted saving to ensure consistent speed based on the target file size, regardless of total project scale.
+* **System Overhaul**
+    * Full revision of all landing pages and documentation sites.
+
 ### Notes
 
 - Experimental features may change or be removed without notice  
