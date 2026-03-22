@@ -15,6 +15,15 @@
 
 ---
 
+> [!NOTE]
+> This README mainly reflects the older CLI-focused v0.9.1 state.
+> Public testing is now being moved gradually to the website.
+>
+> - Website / LP (public test site): https://rinne-btn.pages.dev/
+> - Free edition (public test): https://rinne-btn.pages.dev/download/
+>
+> For the current public test flow, downloads, and product pages, please use the website first.
+
 # Rinne — Local Snapshot-Based Versioning Tool
 
 > Rinne is a simple command-line tool that lets you keep a “point-in-time snapshot” of a folder exactly as it is.
