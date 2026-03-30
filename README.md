@@ -1,5 +1,5 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
-![Status: Experimental](https://img.shields.io/badge/status-experimental-orange)
+![Status: Archived](https://img.shields.io/badge/status-archived-lightgrey)
 
 <p align="center">
   <img src="Assets/logo.png" alt="rinne logo" width="20%" />
@@ -15,14 +15,15 @@
 
 ---
 
-> [!NOTE]
-> This README mainly reflects the older CLI-focused v0.9.1 state.
-> Public testing is now being moved gradually to the website.
+> [!WARNING]
+> This repository is archived for reference only.
+> It is no longer the primary public entry point for Rinne and is not expected to receive ongoing maintenance or release-status updates.
 >
-> - Website / LP (public test site): https://rinne-btn.pages.dev/
-> - Free edition (public test): https://rinne-btn.pages.dev/download/
+> For current product information, downloads, and edition details, please use:
 >
-> For the current public test flow, downloads, and product pages, please use the website first.
+> - Website / LP: https://rinne-btn.pages.dev/
+> - Free edition: https://rinne-btn.pages.dev/download/
+> - Standard edition (Microsoft Store): https://apps.microsoft.com/detail/9P9LT6D86ZBM
 
 # Rinne — Local Snapshot-Based Versioning Tool
 
